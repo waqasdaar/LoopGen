@@ -1,10 +1,38 @@
 #!/usr/bin/env python3
 """
-LoopGen - Production-Grade Loopback Interface Manager with FRR Integration
-Version: 2.8.0
-Platform: Ubuntu Linux + FRR (Free Range Routing)
+╔══════════════════════════════════════════════════════════════════════════════╗
+║           LoopGen — Production-Grade Loopback Interface Manager              ║
+║                        with FRR Routing Integration                          ║
+╠══════════════════════════════════════════════════════════════════════════════╣
+║  Version   : 2.8.1  (BASELINE — fixes prettytable DeprecationWarning)        ║
+║  Platform  : Ubuntu Linux 20.04 / 22.04 / 24.04                              ║
+║  Python    : 3.8 — 3.12                                                      ║
+║  FRR       : 8.x / 9.x / 10.x  (optional — gracefully disabled if absent)    ║
+╠══════════════════════════════════════════════════════════════════════════════╣
+║  CHANGELOG v2.8.1                                                            ║
+║  ─────────────────                                                           ║
+║  Root cause of persistent DeprecationWarning:                                ║
+║    prettytable.enums exists on this system and TableStyle imports fine,      ║
+║    but TableStyle.SINGLE_BORDER raises AttributeError on this specific       ║
+║    build.  The except(ImportError, AttributeError) clause catches it and     ║
+║    falls through to Level 2 which imports the deprecated SINGLE_BORDER       ║
+║    constant — triggering the warning.                                        ║
+║                                                                              ║
+║  Fix applied:                                                                ║
+║    1. Import warnings from stdlib.                                           ║
+║    2. Silence DeprecationWarning for the prettytable import block only,      ║
+║       then restore the original filter state.  This means the warning is     ║
+║       never emitted regardless of which code path succeeds.                  ║
+║    3. Try TableStyle enum members by name using getattr() with a sentinel    ║
+║       so AttributeError on the member never reaches user output.             ║
+║    4. Verify TABLE_STYLE is not None after all levels — abort with a         ║
+║       clear message if prettytable is too old/broken to provide any style.   ║
+╚══════════════════════════════════════════════════════════════════════════════╝
 """
 
+# ─────────────────────────────────────────────────────────────────────────────
+#  STANDARD LIBRARY IMPORTS
+# ─────────────────────────────────────────────────────────────────────────────
 import json
 import logging
 import os
@@ -13,6 +41,7 @@ import re
 import subprocess
 import sys
 import time
+import warnings
 from copy import deepcopy
 from datetime import datetime
 from ipaddress import (
@@ -22,6 +51,10 @@ from ipaddress import (
 )
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  THIRD-PARTY IMPORTS
+# ─────────────────────────────────────────────────────────────────────────────
 
 # ── pyroute2 ──────────────────────────────────────────────────────────────────
 try:
@@ -33,21 +66,26 @@ except ImportError:
         "        Run: pip install pyroute2"
     )
 
-# ── PrettyTable — fully defensive import (v2.8 fix) ──────────────────────────
+# ── PrettyTable — warning-safe, fully defensive import ───────────────────────
 #
-# We use a two-step approach:
-#   Step 1 — make sure PrettyTable itself is importable (fail fast if not).
-#   Step 2 — try the modern TableStyle enum; if that physical import fails
-#             for ANY reason (ImportError, AttributeError, or anything else)
-#             fall back to the legacy SINGLE_BORDER constant.
+#  Problem recap (v2.8.0 → v2.8.1):
+#    On the target system prettytable.enums exists and TableStyle imports
+#    without error, BUT TableStyle.SINGLE_BORDER raises AttributeError.
+#    The except clause caught this and imported the deprecated SINGLE_BORDER
+#    constant, which itself emits a DeprecationWarning at import time.
 #
-# This handles every known edge case:
-#   • prettytable >= 3.9 with enums module   → TableStyle.SINGLE_BORDER
-#   • prettytable >= 3.9 without enums module → SINGLE_BORDER (no warning
-#     because on such builds the deprecation machinery is also absent)
-#   • prettytable <  3.9                      → SINGLE_BORDER
-#   • prettytable not installed               → hard exit
-
+#  Solution:
+#    • Wrap the entire prettytable style-detection block in a
+#      warnings.catch_warnings() context manager so no DeprecationWarning
+#      can escape regardless of which branch runs.
+#    • Use getattr() with a _MISSING sentinel to probe enum members without
+#      triggering AttributeError propagation.
+#    • Four levels of fallback, all silent:
+#        L1 — TableStyle enum member (prettytable >= 3.9, normal install)
+#        L2 — SINGLE_BORDER constant (prettytable < 3.9 or stripped build)
+#        L3 — Integer 11             (absolute fallback — always works)
+#        L4 — sys.exit()             (prettytable not importable at all)
+#
 try:
     from prettytable import PrettyTable
 except ImportError:
@@ -56,26 +94,54 @@ except ImportError:
         "        Run: pip install prettytable"
     )
 
-TABLE_STYLE = None   # will be set by whichever branch succeeds below
+_MISSING = object()  # sentinel for getattr probing
 
-try:
-    # Modern path — only taken when the sub-module physically exists
-    from prettytable.enums import TableStyle as _PtTableStyle
-    TABLE_STYLE = _PtTableStyle.SINGLE_BORDER
-except (ImportError, AttributeError):
-    # Legacy / stripped path — import the constant directly
-    try:
-        from prettytable import SINGLE_BORDER as _PtSingleBorder  # type: ignore[attr-defined]
-        TABLE_STYLE = _PtSingleBorder
-    except (ImportError, AttributeError):
-        # Absolute last resort: hardcode the integer value that
-        # prettytable has always used for SINGLE_BORDER (11).
-        # The table will render correctly; only style metadata differs.
-        TABLE_STYLE = 11  # type: ignore[assignment]
+# Suppress DeprecationWarning for this entire detection block.
+# warnings.catch_warnings() saves and restores the filter state on exit,
+# so warnings from the rest of the application are unaffected.
+with warnings.catch_warnings():
+    warnings.simplefilter("ignore", DeprecationWarning)
+
+    TABLE_STYLE = None  # will be set by first successful level below
+
+    # Level 1 — TableStyle enum  (prettytable >= 3.9, correct install)
+    if TABLE_STYLE is None:
+        try:
+            from prettytable.enums import TableStyle as _PtTableStyle
+            _member = getattr(_PtTableStyle, "SINGLE_BORDER", _MISSING)
+            if _member is not _MISSING:
+                TABLE_STYLE = _member
+        except (ImportError, Exception):
+            pass
+
+    # Level 2 — SINGLE_BORDER constant  (prettytable < 3.9 or stripped)
+    if TABLE_STYLE is None:
+        try:
+            # Import inside the warnings-suppressed block so the
+            # DeprecationWarning emitted by prettytable itself is silenced.
+            import importlib
+            _pt = importlib.import_module("prettytable")
+            _const = getattr(_pt, "SINGLE_BORDER", _MISSING)
+            if _const is not _MISSING:
+                TABLE_STYLE = _const
+        except Exception:
+            pass
+
+    # Level 3 — integer 11 (SINGLE_BORDER has always been 11 internally)
+    if TABLE_STYLE is None:
+        TABLE_STYLE = 11
+
+# Sanity guard — should never be reached, but fail clearly if it is
+if TABLE_STYLE is None:
+    sys.exit(
+        "[FATAL] Could not resolve a PrettyTable table style.\n"
+        "        Try: pip install --upgrade prettytable"
+    )
 
 # ── colorama ──────────────────────────────────────────────────────────────────
 try:
-    from colorama import Fore, Style, Back, init as colorama_init
+    from colorama import Back, Fore, Style
+    from colorama import init as colorama_init
     colorama_init(autoreset=True)
 except ImportError:
     sys.exit(
@@ -83,12 +149,12 @@ except ImportError:
         "        Run: pip install colorama"
     )
 
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 #  CONSTANTS
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 STATE_FILE             = Path("/var/tmp/loopgen_state.json")
 LOG_FILE               = Path("/var/tmp/loopgen.log")
-APP_VERSION            = "2.8.0"
+APP_VERSION            = "2.8.1"
 MAX_IFNAME_LEN         = 15
 DEFAULT_PREFIX         = "loop"
 OSPF_AREA_DEFAULT      = "0.0.0.0"
@@ -103,9 +169,9 @@ RESERVED_NETWORKS = [
     ip_network("255.255.255.255/32"),
 ]
 
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 #  LOGGING
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 def setup_logging() -> logging.Logger:
     logger = logging.getLogger("loopgen")
     logger.setLevel(logging.DEBUG)
@@ -127,21 +193,22 @@ def setup_logging() -> logging.Logger:
 
 log = setup_logging()
 
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 #  COLOR / OUTPUT HELPERS
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 class C:
-    HEADER  = Fore.CYAN  + Style.BRIGHT
-    SUCCESS = Fore.GREEN + Style.BRIGHT
-    ERROR   = Fore.RED   + Style.BRIGHT
+    HEADER  = Fore.CYAN   + Style.BRIGHT
+    SUCCESS = Fore.GREEN  + Style.BRIGHT
+    ERROR   = Fore.RED    + Style.BRIGHT
     WARN    = Fore.YELLOW
     INFO    = Fore.WHITE
     DIM     = Style.DIM
-    NEW_IF  = Fore.WHITE + Back.BLACK + Style.DIM
+    NEW_IF  = Fore.WHITE  + Back.BLACK + Style.DIM
     PROMPT  = Fore.MAGENTA + Style.BRIGHT
     RESET   = Style.RESET_ALL
     BOLD    = Style.BRIGHT
     CYAN    = Fore.CYAN
+
 
 def print_header(text: str) -> None:
     width = 64
@@ -151,20 +218,25 @@ def print_header(text: str) -> None:
         f"{'═' * width}{C.RESET}"
     )
 
+
 def print_success(text: str) -> None:
     print(f"{C.SUCCESS}✔  {text}{C.RESET}")
+
 
 def print_error(text: str) -> None:
     print(f"{C.ERROR}✘  {text}{C.RESET}")
     log.error(text)
 
+
 def print_warn(text: str) -> None:
     print(f"{C.WARN}⚠  {text}{C.RESET}")
     log.warning(text)
 
+
 def print_info(text: str) -> None:
     print(f"{C.INFO}ℹ  {text}{C.RESET}")
     log.info(text)
+
 
 def prompt(text: str, default: str = "") -> str:
     suffix = f" [{default}]" if default else ""
@@ -177,11 +249,12 @@ def prompt(text: str, default: str = "") -> str:
         print()
         return default
 
+
 def make_table(*field_names: str) -> PrettyTable:
     """
-    Return a consistently styled PrettyTable.
-    TABLE_STYLE holds whichever value was successfully imported —
-    enum member, legacy constant, or integer fallback.
+    Create a consistently styled PrettyTable.
+    TABLE_STYLE was resolved at startup — enum, constant, or integer.
+    No deprecation warning is possible here.
     """
     tbl = PrettyTable()
     tbl.set_style(TABLE_STYLE)
@@ -189,16 +262,17 @@ def make_table(*field_names: str) -> PrettyTable:
     tbl.align = "l"
     return tbl
 
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 #  INTERFACE NAMING
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 def generate_ifname(prefix: str, number: int) -> str:
     """
-    <prefix><zero-padded-number>  e.g.  loop001, loop042
-    Tag is metadata only — never embedded in the kernel name.
+    <prefix><zero-padded-number>  e.g.  loop001, loop042, mgmt007
+    Tag is metadata only — never embedded in the kernel interface name.
     """
-    safe = re.sub(r"[^a-zA-Z0-9]", "", prefix) or DEFAULT_PREFIX
-    return f"{safe}{str(number).zfill(3)}"[:MAX_IFNAME_LEN]
+    safe   = re.sub(r"[^a-zA-Z0-9]", "", prefix) or DEFAULT_PREFIX
+    numstr = str(number).zfill(3)
+    return f"{safe}{numstr}"[:MAX_IFNAME_LEN]
 
 
 def next_available_number(
@@ -217,24 +291,25 @@ def next_available_number(
         n += 1
     return n
 
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 #  STATE MANAGER
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 class StateManager:
     """
-    JSON-backed persistence for all created loopback interfaces.
+    Atomic JSON-backed persistence for all created loopback interfaces.
 
-    Schema per entry:
-        interface   str   e.g. "loop001"
-        ip          str   e.g. "10.1.2.3"
-        prefix_len  int   always 32
-        vrf         str   VRF name or "GRT"
-        tag         str   user label (metadata only — not in ifname)
-        protocol    str   "OSPF" | "BGP" | "None"
-        ospf_method str   "network" | "interface" | "none"
-        ospf_area   str   e.g. "0.0.0.0"
-        bgp_asn     str   ASN at creation time — used for cleanup
-        created_at  str   ISO-8601 UTC
+    Per-entry schema
+    ────────────────
+    interface   str   Kernel interface name, e.g. "loop001"
+    ip          str   Host address, e.g. "10.1.2.3"
+    prefix_len  int   Always 32
+    vrf         str   VRF name or "GRT"
+    tag         str   User label (metadata — not in ifname)
+    protocol    str   "OSPF" | "BGP" | "None"
+    ospf_method str   "network" | "interface" | "none"
+    ospf_area   str   e.g. "0.0.0.0"
+    bgp_asn     str   ASN at creation time — used for cleanup
+    created_at  str   ISO-8601 UTC
     """
 
     def __init__(self, path: Path = STATE_FILE):
@@ -250,13 +325,13 @@ class StateManager:
                 if "interfaces" in data:
                     self._state = data
                     log.debug(
-                        f"Loaded {len(self._state['interfaces'])} "
-                        f"entries"
+                        f"State loaded: "
+                        f"{len(self._state['interfaces'])} entries"
                     )
                 else:
                     print_warn("State schema mismatch — starting fresh.")
             except (json.JSONDecodeError, OSError) as exc:
-                print_warn(f"State load error ({exc}) — fresh start.")
+                print_warn(f"State load error ({exc}) — starting fresh.")
 
     def save(self) -> None:
         try:
@@ -264,6 +339,10 @@ class StateManager:
             with open(tmp, "w", encoding="utf-8") as fh:
                 json.dump(self._state, fh, indent=2, default=str)
             tmp.rename(self.path)
+            log.debug(
+                f"State saved: "
+                f"{len(self._state['interfaces'])} entries"
+            )
         except OSError as exc:
             print_error(f"State save failed: {exc}")
 
@@ -321,17 +400,23 @@ class StateManager:
             if v.get("vrf") == vrf
         ]
 
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 #  KERNEL / VRF MANAGER
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 class KernelManager:
     """
     All kernel networking via pyroute2 — zero shell parsing.
 
-    VRF placement guarantee: every operation for one interface shares
-    a SINGLE IPRoute() socket so netlink messages are strictly FIFO.
-    Master is always set BEFORE addr add so the connected route lands
-    in the VRF routing table, not the main table.
+    VRF placement guarantee
+    ───────────────────────
+    All operations for one interface share a SINGLE IPRoute() socket.
+    One socket = strict FIFO netlink ordering:
+        1. create dummy  (no IP, no master)
+        2. enslave       (master set BEFORE addr add)
+        3. settle        (0.1 s — VRF driver processes master event)
+        4. verify        (assert master is correct)
+        5. addr add      (connected route → VRF table, not main)
+        6. link up
     """
 
     def __init__(self):
@@ -356,6 +441,7 @@ class KernelManager:
                         "table":   table_id,
                         "ifindex": link.get("index", 0),
                     }
+                    log.debug(f"VRF: {name}  table={table_id}")
         except NetlinkError as exc:
             print_error(f"VRF discovery error: {exc}")
         return vrfs
@@ -404,7 +490,7 @@ class KernelManager:
                     if ip_str:
                         ips.append(ip_str)
         except NetlinkError as exc:
-            log.error(f"Kernel IP error: {exc}")
+            log.error(f"Kernel IP query error: {exc}")
         return ips
 
     def _get_master_name(
@@ -421,12 +507,12 @@ class KernelManager:
         return masters[0].get_attr("IFLA_IFNAME") if masters else None
 
     def create_vrf_interface(
-        self, ifname: str, ip: str, prefix_len: int, vrf_name: str
+        self,
+        ifname:     str,
+        ip:         str,
+        prefix_len: int,
+        vrf_name:   str,
     ) -> bool:
-        """
-        Atomically create a dummy interface inside a VRF.
-        One socket: create → enslave → settle → verify → addr → up.
-        """
         if self.interface_exists(ifname):
             print_warn(f"Interface {ifname} already exists.")
             return False
@@ -446,24 +532,38 @@ class KernelManager:
                     )
                     return False
                 if_idx = if_idx_list[0]
+                log.debug(f"[1/5] dummy: {ifname} idx={if_idx}")
 
                 ipr.link("set", index=if_idx, master=vrf_idx)
+                log.debug(
+                    f"[2/5] enslaved {ifname} → "
+                    f"{vrf_name} (vrf_idx={vrf_idx})"
+                )
+
                 time.sleep(VRF_ENSLAVE_SETTLE_SEC)
 
                 master = self._get_master_name(ipr, ifname)
                 if master != vrf_name:
                     print_error(
-                        f"VRF check failed: {ifname} master='{master}' "
-                        f"expected='{vrf_name}'."
+                        f"VRF check failed: {ifname} "
+                        f"master='{master}' expected='{vrf_name}'."
                     )
                     ipr.link("del", index=if_idx)
                     return False
+                log.debug(
+                    f"[3/5] VRF verified: {ifname} → {vrf_name}"
+                )
 
                 ipr.addr(
-                    "add", index=if_idx,
-                    address=ip, prefixlen=prefix_len,
+                    "add",
+                    index=if_idx,
+                    address=ip,
+                    prefixlen=prefix_len,
                 )
+                log.debug(f"[4/5] addr {ip}/{prefix_len} → {ifname}")
+
                 ipr.link("set", index=if_idx, state="up")
+                log.debug(f"[5/5] {ifname} UP")
 
             log.info(
                 f"VRF interface ready: {ifname} "
@@ -471,12 +571,17 @@ class KernelManager:
             )
             return True
         except NetlinkError as exc:
-            print_error(f"Kernel error {ifname}/{vrf_name}: {exc}")
+            print_error(
+                f"Kernel error {ifname}/{vrf_name}: {exc}"
+            )
             self.delete_interface(ifname)
             return False
 
     def create_grt_interface(
-        self, ifname: str, ip: str, prefix_len: int
+        self,
+        ifname:     str,
+        ip:         str,
+        prefix_len: int,
     ) -> bool:
         if self.interface_exists(ifname):
             print_warn(f"Interface {ifname} already exists.")
@@ -492,8 +597,10 @@ class KernelManager:
                     return False
                 if_idx = if_idx_list[0]
                 ipr.addr(
-                    "add", index=if_idx,
-                    address=ip, prefixlen=prefix_len,
+                    "add",
+                    index=if_idx,
+                    address=ip,
+                    prefixlen=prefix_len,
                 )
                 ipr.link("set", index=if_idx, state="up")
             log.info(
@@ -534,15 +641,26 @@ class KernelManager:
         except NetlinkError:
             return False
 
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 #  FRR MANAGER
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 class FRRManager:
     """
-    VRF-aware FRR configuration via vtysh.
+    VRF-aware FRR configuration and verified removal via vtysh.
 
-    BGP existence / removal uses 'show bgp [vrf X] ipv4 unicast'
-    (live routing-table query) — immune to running-config formatting.
+    BGP VRF model (correct FRR syntax):
+        GRT: router bgp <asn>
+               address-family ipv4 unicast
+                 network X.X.X.X/32
+               exit-address-family
+
+        VRF: router bgp <asn> vrf <name>
+               address-family ipv4 unicast
+                 network X.X.X.X/32
+               exit-address-family
+
+    BGP removal is verified via 'show bgp [vrf X] ipv4 unicast'
+    — NOT running-config text parsing.
     """
 
     def __init__(self):
@@ -564,7 +682,7 @@ class FRRManager:
             if t.returncode != 0:
                 print_warn("vtysh not responsive — FRR disabled.")
                 return False
-            log.debug("FRR/vtysh OK")
+            log.debug("FRR/vtysh available")
             return True
         except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
             print_warn(f"vtysh check: {exc} — FRR disabled.")
@@ -609,7 +727,7 @@ class FRRManager:
         ok, out = self.run_vtysh([cmd])
         return out if ok else f"(Error: {out})"
 
-    # ── ASN helpers ────────────────────────────────────────────────────────
+    # ── ASN resolution ────────────────────────────────────────────────────────
 
     def get_bgp_asn(self) -> Optional[str]:
         full  = self.get_running_config()
@@ -632,6 +750,7 @@ class FRRManager:
     def _resolve_asn(
         self, vrf: Optional[str], explicit_asn: str
     ) -> Optional[str]:
+        """Three-level ASN fallback: stored → VRF block → GRT block."""
         candidate = explicit_asn.strip()
         if candidate:
             log.debug(f"_resolve_asn: stored={candidate}")
@@ -651,7 +770,7 @@ class FRRManager:
         log.debug(f"_resolve_asn: GRT block={asn}")
         return asn
 
-    # ── Process existence ──────────────────────────────────────────────────
+    # ── Process existence ─────────────────────────────────────────────────────
 
     def ospf_process_exists(
         self, vrf: Optional[str] = None
@@ -682,7 +801,7 @@ class FRRManager:
             re.search(r"^router bgp \d+$", full, re.MULTILINE)
         )
 
-    # ── BGP existence via 'show bgp' ───────────────────────────────────────
+    # ── BGP existence via show bgp ────────────────────────────────────────────
 
     def bgp_network_exists_in_frr(
         self,
@@ -691,9 +810,8 @@ class FRRManager:
         vrf:        Optional[str] = None,
     ) -> bool:
         """
-        Query FRR's live BGP table — not running-config text.
-        show bgp vrf <name> ipv4 unicast  (VRF)
-        show bgp ipv4 unicast             (GRT)
+        Query FRR's live BGP routing table — not running-config text.
+        Immune to config formatting differences across FRR versions.
         """
         if not self._available:
             return False
@@ -707,8 +825,8 @@ class FRRManager:
 
         ok, output = self.run_vtysh([cmd])
         log.debug(
-            f"bgp_network_exists_in_frr: cmd='{cmd}' "
-            f"target={target} ok={ok}"
+            f"bgp_network_exists_in_frr: "
+            f"cmd='{cmd}' target={target} ok={ok}"
         )
         if not ok:
             log.debug(
@@ -721,36 +839,39 @@ class FRRManager:
             clean = line.strip().lstrip("*>idshr? ")
             if clean.startswith(target):
                 log.debug(
-                    f"bgp_network_exists_in_frr: FOUND "
-                    f"{target} vrf={vrf}"
+                    f"bgp_network_exists_in_frr: "
+                    f"FOUND {target} vrf={vrf}"
                 )
                 return True
 
         log.debug(
-            f"bgp_network_exists_in_frr: NOT FOUND "
-            f"{target} vrf={vrf}"
+            f"bgp_network_exists_in_frr: "
+            f"NOT FOUND {target} vrf={vrf}"
         )
         return False
 
     def _verify_bgp_removal(
-        self, ip: str, prefix_len: int, vrf: Optional[str]
+        self,
+        ip:         str,
+        prefix_len: int,
+        vrf:        Optional[str],
     ) -> bool:
         still_present = self.bgp_network_exists_in_frr(
             ip, prefix_len, vrf
         )
         if still_present:
             log.error(
-                f"_verify_bgp_removal: {ip}/{prefix_len} still present "
-                f"(vrf={vrf})"
+                f"_verify_bgp_removal: {ip}/{prefix_len} "
+                f"STILL present (vrf={vrf})"
             )
         else:
             log.info(
-                f"_verify_bgp_removal: {ip}/{prefix_len} confirmed "
-                f"removed (vrf={vrf})"
+                f"_verify_bgp_removal: {ip}/{prefix_len} "
+                f"confirmed removed (vrf={vrf})"
             )
         return not still_present
 
-    # ── OSPF helpers ───────────────────────────────────────────────────────
+    # ── OSPF helpers ──────────────────────────────────────────────────────────
 
     def _get_ospf_router_block(
         self, vrf: Optional[str] = None
@@ -790,8 +911,11 @@ class FRRManager:
         return m.group(1) if m else OSPF_AREA_DEFAULT
 
     def ospf_network_exists(
-        self, ip: str, prefix_len: int, area: str,
-        vrf: Optional[str] = None,
+        self,
+        ip:         str,
+        prefix_len: int,
+        area:       str,
+        vrf:        Optional[str] = None,
     ) -> bool:
         net   = str(IPv4Network(f"{ip}/{prefix_len}", strict=False))
         block = self._get_ospf_router_block(vrf)
@@ -824,11 +948,14 @@ class FRRManager:
                     return True
         return False
 
-    # ── OSPF apply / remove ────────────────────────────────────────────────
+    # ── OSPF apply / remove ───────────────────────────────────────────────────
 
     def configure_ospf_network(
-        self, ip: str, prefix_len: int, area: str,
-        vrf: Optional[str] = None,
+        self,
+        ip:         str,
+        prefix_len: int,
+        area:       str,
+        vrf:        Optional[str] = None,
     ) -> bool:
         net = str(IPv4Network(f"{ip}/{prefix_len}", strict=False))
         ctx = (
@@ -844,7 +971,10 @@ class FRRManager:
         return ok
 
     def configure_ospf_interface(
-        self, ifname: str, area: str, vrf: Optional[str] = None
+        self,
+        ifname: str,
+        area:   str,
+        vrf:    Optional[str] = None,
     ) -> bool:
         ok, out = self.run_vtysh([
             "configure terminal",
@@ -858,8 +988,11 @@ class FRRManager:
         return ok
 
     def remove_ospf_network(
-        self, ip: str, prefix_len: int, area: str,
-        vrf: Optional[str] = None,
+        self,
+        ip:         str,
+        prefix_len: int,
+        area:       str,
+        vrf:        Optional[str] = None,
     ) -> bool:
         if not self.ospf_network_exists(ip, prefix_len, area, vrf):
             log.info(f"OSPF network absent — skip (vrf={vrf})")
@@ -878,10 +1011,15 @@ class FRRManager:
         return ok
 
     def remove_ospf_interface(
-        self, ifname: str, area: str, vrf: Optional[str] = None
+        self,
+        ifname: str,
+        area:   str,
+        vrf:    Optional[str] = None,
     ) -> bool:
         if not self.ospf_interface_area_exists(ifname, area):
-            log.info(f"OSPF interface area absent — skip ({ifname})")
+            log.info(
+                f"OSPF interface area absent on {ifname} — skip"
+            )
             return True
         ok, out = self.run_vtysh([
             "configure terminal",
@@ -894,16 +1032,20 @@ class FRRManager:
             print_error(f"OSPF interface removal failed: {out}")
         return ok
 
-    # ── BGP apply ──────────────────────────────────────────────────────────
+    # ── BGP apply ─────────────────────────────────────────────────────────────
 
     def configure_bgp_network(
-        self, ip: str, prefix_len: int, vrf: Optional[str] = None
+        self,
+        ip:         str,
+        prefix_len: int,
+        vrf:        Optional[str] = None,
     ) -> bool:
         asn = self.get_bgp_asn_for_vrf(vrf)
         if not asn:
             print_error(
-                "No BGP ASN found. Configure BGP first "
-                "(e.g. 'router bgp 65000' in vtysh)."
+                "No BGP ASN found. Configure BGP first:\n"
+                "  sudo vtysh -c 'configure terminal' "
+                "-c 'router bgp <asn>' -c 'end'"
             )
             return False
         network = str(IPv4Network(f"{ip}/{prefix_len}", strict=False))
@@ -926,7 +1068,7 @@ class FRRManager:
             print_error(f"BGP network config failed: {out}")
         return ok
 
-    # ── BGP remove ─────────────────────────────────────────────────────────
+    # ── BGP remove ────────────────────────────────────────────────────────────
 
     def remove_bgp_network(
         self,
@@ -936,16 +1078,19 @@ class FRRManager:
         explicit_asn: str = "",
     ) -> bool:
         """
-        Remove a BGP network from FRR.
-        1. Resolve ASN (stored → VRF block → GRT block).
-        2. Confirm presence via 'show bgp' — not config text.
-        3. Issue 'no network'.
-        4. Re-verify.  One automatic retry if still present.
+        Remove a BGP network advertisement from FRR.
+
+        Steps:
+          1. Resolve ASN (stored → VRF block → GRT block).
+          2. Confirm presence via 'show bgp' — not config text.
+          3. Issue 'no network' in correct router context.
+          4. Re-verify via 'show bgp'.
+          5. One automatic retry with 0.5 s settle if still present.
         """
         network = str(IPv4Network(f"{ip}/{prefix_len}", strict=False))
         log.info(
-            f"remove_bgp_network: network={network} vrf={vrf} "
-            f"explicit_asn='{explicit_asn}'"
+            f"remove_bgp_network: network={network} "
+            f"vrf={vrf} explicit_asn='{explicit_asn}'"
         )
 
         asn = self._resolve_asn(vrf, explicit_asn)
@@ -973,7 +1118,8 @@ class FRRManager:
             if (vrf and vrf != "GRT") else f"router bgp {asn}"
         )
         log.info(
-            f"remove_bgp_network: 'no network {network}' ctx='{ctx}'"
+            f"remove_bgp_network: "
+            f"'no network {network}' ctx='{ctx}'"
         )
         ok, out = self.run_vtysh([
             "configure terminal",
@@ -998,7 +1144,7 @@ class FRRManager:
             return True
 
         log.warning(
-            "remove_bgp_network: prefix still visible — retrying"
+            "remove_bgp_network: still visible — retrying once"
         )
         time.sleep(0.5)
         self.run_vtysh([
@@ -1019,9 +1165,9 @@ class FRRManager:
             )
         return removed
 
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 #  IP UTILITIES
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 class IPUtils:
 
     @staticmethod
@@ -1056,7 +1202,9 @@ class IPUtils:
             candidate = str(IPv4Address(h_int))
             if candidate not in exclude_set:
                 return candidate
-        raise RuntimeError("No unique random IP after 1000 attempts.")
+        raise RuntimeError(
+            "No unique random IP found after 1000 attempts."
+        )
 
     @staticmethod
     def get_ips_from_subnet(
@@ -1076,9 +1224,9 @@ class IPUtils:
             print_error(f"Subnet error: {exc}")
             return []
 
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 #  DISPLAY MANAGER
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 class DisplayManager:
 
     def __init__(self, state: StateManager, kernel: KernelManager):
@@ -1086,7 +1234,8 @@ class DisplayManager:
         self.kernel = kernel
 
     def show_interfaces(
-        self, highlight_new: Optional[List[str]] = None
+        self,
+        highlight_new: Optional[List[str]] = None,
     ) -> None:
         highlight_new = highlight_new or []
         print_header("Interface Overview")
@@ -1139,7 +1288,8 @@ class DisplayManager:
                 addrs  = iface["addresses"]
                 ip_str = (
                     ", ".join(
-                        f"{a['ip']}/{a['prefix_len']}" for a in addrs
+                        f"{a['ip']}/{a['prefix_len']}"
+                        for a in addrs
                     ) if addrs else "-"
                 )
                 meta     = state_data.get(ifname, {})
@@ -1150,7 +1300,8 @@ class DisplayManager:
                 row = [ifname, state_col, ip_str, tag, protocol, created]
                 if ifname in highlight_new:
                     row = [
-                        f"{C.NEW_IF}{cell}{C.RESET}" for cell in row
+                        f"{C.NEW_IF}{cell}{C.RESET}"
+                        for cell in row
                     ]
                 tbl.add_row(row)
                 total += 1
@@ -1166,9 +1317,9 @@ class DisplayManager:
         print_header("FRR Running Configuration")
         print(f"{C.DIM}{frr.get_running_config()}{C.RESET}")
 
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 #  LOOPBACK CREATOR
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 class LoopbackCreator:
 
     def __init__(
@@ -1213,7 +1364,7 @@ class LoopbackCreator:
             print_success(f"Done: {', '.join(newly_created)}")
             self.display.show_interfaces(highlight_new=newly_created)
         else:
-            print_warn("No interfaces created.")
+            print_warn("No interfaces were created.")
 
     def _select_vrfs(
         self, vrf_choices: List[str]
@@ -1238,7 +1389,7 @@ class LoopbackCreator:
         seen: set = set()
         return [
             v for v in selected
-            if not (v in seen or seen.add(v))  # type: ignore
+            if not (v in seen or seen.add(v))  # type: ignore[func-returns-value]
         ]
 
     def _create_for_vrf(self, vrf: str) -> List[str]:
@@ -1267,7 +1418,9 @@ class LoopbackCreator:
             ospf_method = self._ask_ospf_method()
             area_input  = prompt(
                 "OSPF area",
-                self.frr.get_ospf_area(vrf if vrf != "GRT" else None),
+                self.frr.get_ospf_area(
+                    vrf if vrf != "GRT" else None
+                ),
             )
             ospf_area = self._normalize_area(area_input)
 
@@ -1277,8 +1430,10 @@ class LoopbackCreator:
             bgp_asn = self.frr.get_bgp_asn_for_vrf(frr_vrf) or ""
             if not bgp_asn:
                 print_error(
-                    "No BGP process in FRR. "
-                    "Run 'router bgp <asn>' in vtysh first."
+                    "No BGP process found in FRR.\n"
+                    "  Configure one first, e.g.:\n"
+                    "  sudo vtysh -c 'configure terminal' "
+                    "-c 'router bgp 65000' -c 'end'"
                 )
                 return []
 
@@ -1287,7 +1442,7 @@ class LoopbackCreator:
         print(f"  Count    : {count}")
         print(
             f"  Names    : {prefix}001, {prefix}002 … "
-            f"(tag='{tag}' is metadata)"
+            f"(tag='{tag}' stored as metadata)"
         )
         print(
             f"  IP mode  : {ip_mode}"
@@ -1296,7 +1451,8 @@ class LoopbackCreator:
         print(f"  Protocol : {protocol}")
         if protocol == "OSPF":
             print(
-                f"  OSPF     : method={ospf_method}  area={ospf_area}"
+                f"  OSPF     : "
+                f"method={ospf_method}  area={ospf_area}"
             )
         if protocol == "BGP":
             bgp_ctx = (
@@ -1314,7 +1470,8 @@ class LoopbackCreator:
             self.display.show_frr_full(self.frr)
 
         existing_ips = (
-            self.state.get_all_ips() + self.kernel.get_all_kernel_ips()
+            self.state.get_all_ips()
+            + self.kernel.get_all_kernel_ips()
         )
         if ip_mode == "random":
             ips: List[str] = []
@@ -1328,10 +1485,12 @@ class LoopbackCreator:
                     break
         else:
             ips = IPUtils.get_ips_from_subnet(
-                subnet, count, existing_ips  # type: ignore
+                subnet, count, existing_ips  # type: ignore[arg-type]
             )
             if len(ips) < count:
-                print_warn(f"Only {len(ips)} IPs available.")
+                print_warn(
+                    f"Only {len(ips)} IPs available in {subnet}."
+                )
                 count = len(ips)
 
         if not ips:
@@ -1357,8 +1516,8 @@ class LoopbackCreator:
                 continue
 
             print(
-                f"\n  {C.INFO}Creating {C.BOLD}{ifname}{C.RESET} "
-                f"→ {ip}/32  VRF={vrf}"
+                f"\n  {C.INFO}Creating "
+                f"{C.BOLD}{ifname}{C.RESET} → {ip}/32  VRF={vrf}"
             )
 
             if vrf != "GRT":
@@ -1377,16 +1536,20 @@ class LoopbackCreator:
             if vrf != "GRT":
                 if not self.kernel.verify_vrf_membership(ifname, vrf):
                     print_error(
-                        f"VRF membership check failed for {ifname}."
+                        f"VRF membership check failed for {ifname} "
+                        f"— rolling back."
                     )
                     self.kernel.delete_interface(ifname)
                     continue
+                log.info(
+                    f"VRF check passed: {ifname} ∈ {vrf}"
+                )
 
             frr_ok = True
             if protocol == "OSPF" and self.frr.is_available():
                 if not self.frr.ospf_process_exists(frr_vrf):
                     print_warn(
-                        f"No OSPF process for vrf='{vrf}' — skip FRR."
+                        f"No OSPF process for vrf='{vrf}' — skip."
                     )
                     frr_ok = False
                 elif ospf_method == "network":
@@ -1427,7 +1590,10 @@ class LoopbackCreator:
             )
 
         if rolled_back:
-            print_warn(f"Rolled back: {', '.join(rolled_back)}")
+            print_warn(
+                f"Rolled back {len(rolled_back)}: "
+                f"{', '.join(rolled_back)}"
+            )
 
         if (
             created_names
@@ -1465,14 +1631,14 @@ class LoopbackCreator:
             while True:
                 sub = prompt("Subnet (e.g. 10.100.0.0/24)")
                 if not sub:
-                    print_error("Cannot be empty.")
+                    print_error("Subnet cannot be empty.")
                     continue
                 valid, err = IPUtils.validate_subnet(sub)
                 if valid:
                     return "subnet", str(
                         ip_network(sub, strict=False)
                     )
-                print_error(f"Invalid: {err}")
+                print_error(f"Invalid subnet: {err}")
         return "random", None
 
     def _ask_protocol(self) -> str:
@@ -1482,6 +1648,11 @@ class LoopbackCreator:
             f"{C.CYAN}[2]{C.RESET} OSPF  "
             f"{C.CYAN}[3]{C.RESET} BGP"
         )
+        if not self.frr.is_available():
+            print(
+                f"    {C.DIM}(FRR not available — "
+                f"only 'None' is functional){C.RESET}"
+            )
         return {
             "1": "None", "2": "OSPF", "3": "BGP"
         }.get(prompt("Protocol", "1"), "None")
@@ -1489,16 +1660,18 @@ class LoopbackCreator:
     def _ask_ospf_method(self) -> str:
         print(
             f"\n  {C.BOLD}OSPF Method:{C.RESET}  "
-            f"{C.CYAN}[1]{C.RESET} network stmt  "
+            f"{C.CYAN}[1]{C.RESET} network statement  "
             f"{C.CYAN}[2]{C.RESET} interface-level"
         )
         return (
-            "interface" if prompt("Method", "1") == "2" else "network"
+            "interface"
+            if prompt("Method", "1") == "2"
+            else "network"
         )
 
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 #  CLEANUP MANAGER
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 class CleanupManager:
 
     def __init__(
@@ -1517,23 +1690,23 @@ class CleanupManager:
         print_header("Cleanup Loopback Interfaces")
         state_data = self.state.get_all()
         if not state_data:
-            print_info("No tracked interfaces.")
+            print_info("No tracked interfaces found.")
             return
 
         self.display.show_interfaces()
 
-        print(f"\n{C.BOLD}Options:{C.RESET}")
-        print(f"  {C.CYAN}[1]{C.RESET} Keep all")
-        print(f"  {C.CYAN}[2]{C.RESET} Delete ALL")
+        print(f"\n{C.BOLD}Cleanup Options:{C.RESET}")
+        print(f"  {C.CYAN}[1]{C.RESET} Keep all (no changes)")
+        print(f"  {C.CYAN}[2]{C.RESET} Delete ALL tracked interfaces")
         print(f"  {C.CYAN}[3]{C.RESET} Delete by tag")
-        print(f"  {C.CYAN}[4]{C.RESET} Delete by name")
+        print(f"  {C.CYAN}[4]{C.RESET} Delete by interface name")
 
         choice = prompt("Choice", "1")
-        if   choice == "1": print_info("No changes.")
+        if   choice == "1": print_info("No changes made.")
         elif choice == "2": self._delete_all(state_data)
         elif choice == "3": self._delete_by_tag(state_data)
         elif choice == "4": self._delete_by_name(state_data)
-        else:               print_error("Invalid choice.")
+        else:               print_error(f"Invalid choice: '{choice}'")
 
         print_info("Updated interface table:")
         self.display.show_interfaces()
@@ -1590,8 +1763,8 @@ class CleanupManager:
                     )
                 else:
                     print_warn(
-                        f"  BGP removal issue for {ifname}. Verify:\n"
-                        f"  vtysh -c 'show bgp"
+                        f"  BGP removal issue for {ifname}.\n"
+                        f"  Verify: vtysh -c 'show bgp"
                         + (f" vrf {vrf}" if frr_vrf else "")
                         + " ipv4 unicast'"
                     )
@@ -1602,7 +1775,10 @@ class CleanupManager:
         return True
 
     def _confirm(self, targets: List[str]) -> bool:
-        print(f"\n{C.WARN}Will delete:{C.RESET}")
+        print(
+            f"\n{C.WARN}The following interfaces will be "
+            f"deleted:{C.RESET}"
+        )
         for t in targets:
             print(f"  • {t}")
         return (
@@ -1617,7 +1793,7 @@ class CleanupManager:
             for ifname, meta in state_data.items():
                 self._delete_one(ifname, meta)
         else:
-            print_info("Cancelled.")
+            print_info("Deletion cancelled.")
 
     def _delete_by_tag(self, state_data: Dict) -> None:
         tags = sorted(
@@ -1645,7 +1821,7 @@ class CleanupManager:
             for ifname in targets:
                 self._delete_one(ifname, state_data[ifname])
         else:
-            print_info("Cancelled.")
+            print_info("Deletion cancelled.")
 
     def _delete_by_name(self, state_data: Dict) -> None:
         print(f"\n{C.BOLD}Tracked interfaces:{C.RESET}")
@@ -1653,32 +1829,34 @@ class CleanupManager:
             m = state_data[ifname]
             print(
                 f"  {C.CYAN}{ifname}{C.RESET}  "
-                f"ip={m.get('ip','-')}  "
-                f"vrf={m.get('vrf','-')}  "
-                f"tag={m.get('tag','-')}  "
-                f"protocol={m.get('protocol','-')}"
+                f"ip={m.get('ip', '-')}  "
+                f"vrf={m.get('vrf', '-')}  "
+                f"tag={m.get('tag', '-')}  "
+                f"protocol={m.get('protocol', '-')}"
             )
-        raw = prompt("Names to delete (comma-sep)")
+        raw = prompt("Interface name(s) to delete (comma-sep)")
         if not raw:
-            print_error("No input.")
+            print_error("No input provided.")
             return
         targets = [n.strip() for n in raw.split(",") if n.strip()]
         valid   = [t for t in targets if t in state_data]
         invalid = [t for t in targets if t not in state_data]
         if invalid:
-            print_warn(f"Not tracked (skip): {', '.join(invalid)}")
+            print_warn(
+                f"Not tracked — will skip: {', '.join(invalid)}"
+            )
         if not valid:
-            print_error("No valid targets.")
+            print_error("No valid interfaces selected.")
             return
         if self._confirm(valid):
             for ifname in valid:
                 self._delete_one(ifname, state_data[ifname])
         else:
-            print_info("Cancelled.")
+            print_info("Deletion cancelled.")
 
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 #  MAIN APPLICATION
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 class LoopGenApp:
 
     def __init__(self):
@@ -1722,11 +1900,11 @@ class LoopGenApp:
 
     def _menu(self) -> str:
         print(
-            f"\n{C.BOLD}{'─'*52}\n"
+            f"\n{C.BOLD}{'─' * 52}\n"
             f"  Main Menu\n"
-            f"{'─'*52}{C.RESET}"
+            f"{'─' * 52}{C.RESET}"
         )
-        for k, label in [
+        for key, label in [
             ("1", "Show Interfaces"),
             ("2", "Create Loopbacks"),
             ("3", "Cleanup Loopbacks"),
@@ -1734,15 +1912,18 @@ class LoopGenApp:
             ("5", "Show Detected VRFs"),
             ("6", "Exit"),
         ]:
-            print(f"  {C.CYAN}[{k}]{C.RESET} {label}")
-        print(f"{'─'*52}")
+            print(f"  {C.CYAN}[{key}]{C.RESET} {label}")
+        print(f"{'─' * 52}")
         return prompt("Select", "1")
 
     def _show_vrfs(self) -> None:
         print_header("Detected VRFs")
         vrfs = self.kernel.get_vrfs()
         if not vrfs:
-            print_info("No VRF devices — only GRT available.")
+            print_info(
+                "No VRF devices found — "
+                "only Global Routing Table (GRT) available."
+            )
             return
         tbl = make_table("VRF Name", "Routing Table ID", "Ifindex")
         for name, d in sorted(vrfs.items()):
@@ -1756,49 +1937,71 @@ class LoopGenApp:
         while True:
             try:
                 choice = self._menu()
-                if   choice == "1": self.display.show_interfaces()
-                elif choice == "2": self.creator.run()
-                elif choice == "3": self.cleanup.run()
+                if   choice == "1":
+                    self.display.show_interfaces()
+                elif choice == "2":
+                    self.creator.run()
+                elif choice == "3":
+                    self.cleanup.run()
                 elif choice == "4":
                     if self.frr.is_available():
                         self.display.show_frr_full(self.frr)
                     else:
-                        print_error("FRR not available.")
-                elif choice == "5": self._show_vrfs()
+                        print_error(
+                            "FRR is not available on this system."
+                        )
+                elif choice == "5":
+                    self._show_vrfs()
                 elif choice == "6":
-                    print(f"\n{C.SUCCESS}Goodbye!{C.RESET}\n")
+                    print(
+                        f"\n{C.SUCCESS}Goodbye! "
+                        f"State saved to {STATE_FILE}{C.RESET}\n"
+                    )
                     break
                 else:
                     print_error(f"Invalid option: '{choice}'")
             except KeyboardInterrupt:
-                print(f"\n{C.WARN}Ctrl+C — back to menu.{C.RESET}")
+                print(
+                    f"\n\n{C.WARN}[Ctrl+C] — back to menu. "
+                    f"Press Ctrl+C again to force exit.{C.RESET}"
+                )
                 try:
                     time.sleep(0.4)
                 except KeyboardInterrupt:
-                    print(f"\n{C.SUCCESS}Force exit.{C.RESET}\n")
+                    print(
+                        f"\n{C.SUCCESS}Force exit. Goodbye.{C.RESET}\n"
+                    )
                     break
 
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 #  ENTRY POINT
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 def main() -> None:
     if sys.platform != "linux":
-        sys.exit(f"{C.ERROR}Linux only.{C.RESET}")
+        sys.exit(
+            f"{C.ERROR}[FATAL] LoopGen is Linux-only.{C.RESET}"
+        )
     if sys.version_info < (3, 8):
-        sys.exit(f"{C.ERROR}Python 3.8+ required.{C.RESET}")
+        sys.exit(
+            f"{C.ERROR}[FATAL] Python 3.8+ required. "
+            f"Found: {sys.version}{C.RESET}"
+        )
     if os.geteuid() != 0:
         sys.exit(
-            f"{C.ERROR}Run as root: "
-            f"sudo python3 {sys.argv[0]}{C.RESET}"
+            f"{C.ERROR}[FATAL] Root privileges required.\n"
+            f"        Run: sudo python3 {sys.argv[0]}{C.RESET}"
         )
     try:
         STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
-        sys.exit(f"{C.ERROR}State dir error: {exc}{C.RESET}")
+        sys.exit(
+            f"{C.ERROR}[FATAL] Cannot access state directory "
+            f"{STATE_FILE.parent}: {exc}{C.RESET}"
+        )
 
-    log.info(f"LoopGen v{APP_VERSION} starting")
+    log.info(f"LoopGen v{APP_VERSION} starting (PID {os.getpid()})")
     LoopGenApp().run()
-    log.info("LoopGen exit")
+    log.info("LoopGen exiting cleanly")
 
 
 if __name__ == "__main__":
