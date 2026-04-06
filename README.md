@@ -110,16 +110,16 @@ LoopGen handles all four layers from a single interactive menu — with validati
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│                         LoopGen CLI                                │
-├──────────────┬───────────────┬────────────────┬────────────────────┤
-│ StateManager │ KernelManager │  FRRManager    │  DisplayManager    │
-│              │               │                │                    │
-│ JSON file    │  pyroute2     │  vtysh         │  PrettyTable       │
-│ /var/tmp/    │  RTNETLINK    │  OSPF / BGP    │  colorama          │
-│ loopgen_     │  (no shell    │  VRF-aware     │  grouped tables    │
-│ state.json   │   parsing)    │  config        │                    │
-├──────────────┴───────────────┴────────────────┴────────────────────┤
-│  LoopbackCreator │ CleanupManager │ VRFManager │ InterfaceManager  │
+│                         LoopGen CLI                                 │
+├──────────────┬───────────────┬────────────────┬─────────────────────┤
+│ StateManager │ KernelManager │  FRRManager    │  DisplayManager     │
+│              │               │                │                     │
+│ JSON file    │  pyroute2     │  vtysh         │  PrettyTable        │
+│ /var/tmp/    │  RTNETLINK    │  OSPF / BGP    │  colorama           │
+│ loopgen_     │  (no shell    │  VRF-aware     │  grouped tables     │
+│ state.json   │   parsing)    │  config        │                     │
+├──────────────┴───────────────┴────────────────┴─────────────────────┤
+│  LoopbackCreator │ CleanupManager │ VRFManager │ InterfaceManager   │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
