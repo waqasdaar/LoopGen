@@ -889,6 +889,127 @@ After interface-level operations (loopback creation, BGP network advertisement),
 
 > **Exception:** `remove_vrf_complete()` (called during VRF deletion) does call `write memory` to ensure VRF removal is persisted.
 
+**Protocol and Address Family Limitations**
+
+| # | Limitation | Area | Description | Impact | Workaround |
+|---|------------|------|-------------|--------|------------|
+| L-01 | **IPv4 Only** | Addressing | All IP operations (loopback assignment, BGP/OSPF advertisement, subnet allocation) support IPv4 only. IPv6 addressing is not implemented. | Cannot create IPv6 loopbacks or advertise IPv6 prefixes. | Manually assign IPv6 addresses using `ip -6 addr add` after creation. Configure IPv6 routing in `vtysh` manually. |
+| L-02 | **No OSPFv3** | Routing — OSPF | Only OSPFv2 (IPv4) is supported. OSPFv3 for IPv6 prefixes is not implemented. | IPv6 OSPF integration unavailable. | Configure OSPFv3 manually in `vtysh`. |
+| L-03 | **No BGP IPv6 Address Family** | Routing — BGP | BGP operations use `address-family ipv4 unicast` only. IPv6 unicast, VPNv4, VPNv6, and L2VPN EVPN address families are not supported. | Cannot advertise IPv6 prefixes or EVPN routes. | Configure additional BGP address families manually in `vtysh`. |
+| L-04 | **No BGP Community / Policy Attributes** | Routing — BGP | VRFPilot issues plain `network X.X.X.X/Y` statements with no route-map, community, local-preference, MED, or AS-path prepend. | All advertised prefixes use BGP defaults. | Apply route-maps and policies manually in `vtysh` after advertisement. |
+| L-05 | **No OSPF Cost or Passive Control Per Interface** | Routing — OSPF | When using interface-level OSPF (`ip ospf area`), all interfaces are set as `ip ospf passive`. OSPF cost, hello/dead intervals, and authentication are not configurable. | Cannot fine-tune OSPF timers or enable OSPF adjacencies on loopback interfaces. | Modify OSPF interface parameters manually in `vtysh` after creation. |
+| L-06 | **No IS-IS or Static Route Integration** | Routing | Only OSPF and BGP are supported as routing protocols. IS-IS, RIP, static route injection, and BFD integration are not implemented. | Cannot advertise loopbacks into IS-IS or via static routes. | Configure IS-IS or static routes manually in `vtysh`. |
+| L-07 | **Fixed /32 Prefix for Loopback Interfaces** | Addressing | All loopback interfaces are created with a `/32` host prefix. Custom prefix lengths (e.g. `/24` for summarisation) are not supported. | Cannot simulate subnet loopbacks or test summarisation with non-/32 prefixes. | After creation, manually add a secondary address with the desired prefix: `ip addr add 10.0.0.0/24 dev loop001`. |
+
+---
+
+**Interface and Kernel Limitations**
+
+| # | Limitation | Area | Description | Impact | Workaround |
+|---|------------|------|-------------|--------|------------|
+| L-08 | **Dummy Interfaces Only** | Interface Type | VRFPilot creates `dummy` kernel interfaces exclusively. It cannot create physical, VLAN (802.1Q), bond, bridge, VXLAN, GRE tunnel, IPIP, macvlan, or any other interface type. | Cannot use VRFPilot to provision production interface types. | Pre-create the required interface type manually, then use Interface Manager (option 7) to assign it to a VRF. |
+| L-09 | **No Interface Rename** | Interface Naming | Interface names follow the `<prefix><number>` format (e.g. `loop001`). Renaming an existing interface is not supported. | Cannot change an interface name after creation without deleting and recreating it. | Delete the interface and recreate it with the desired name prefix. |
+| L-10 | **Interface Names Limited to 15 Characters** | Interface Naming | Linux `IFNAMSIZ` limits interface names to 15 characters. Long prefixes are silently truncated. | A prefix longer than 12 characters leaves no room for the 3-digit number suffix. | Use short prefixes (≤ 8 characters recommended). |
+| L-11 | **No Persistence Across Reboots** | Kernel State | Dummy interfaces and VRF devices exist only in running kernel state. They are lost on reboot. The state file persists but the kernel objects do not. | After a reboot, the state file will reference interfaces that no longer exist in the kernel. | Integrate with `systemd-networkd`, `/etc/network/interfaces`, or write a startup script that re-runs VRFPilot to recreate from state. |
+| L-12 | **pimreg / pim6reg Cleanup Requires FRR PIM Cooperation** | FRR-Internal Interfaces | PIM registration interfaces (`pimreg<N>`, `pim6reg<N>`) are owned by FRR's PIM daemon. They reject `RTM_DELLINK` and `IFLA_MASTER=0` from the kernel. VRFPilot clears them by asking FRR to release its PIM sockets. | If FRR's PIM daemon is unresponsive, pimreg/pim6reg interfaces may remain orphaned in the GRT after VRF deletion. | Restart FRR (`sudo systemctl restart frr`) to force PIM socket release. |
+| L-13 | **No ECMP or Multiple Addresses Per Interface** | IP Addressing | Each loopback interface is created with exactly one IP address. Equal-Cost Multi-Path (ECMP) and multiple IP addresses per loopback are not managed by VRFPilot. | Cannot simulate ECMP scenarios directly. | Manually add secondary addresses using `ip addr add` after creation. |
+| L-14 | **Single Master (VRF) Per Interface** | VRF Placement | Each interface can belong to exactly one VRF. Linux does not support an interface belonging to multiple VRFs simultaneously. | Cannot share a loopback between two VRFs. | Create separate loopback interfaces for each VRF that needs the prefix. |
+
+
+
+**FRR Integration Limitations**
+
+| # | Limitation | Area | Description | Impact | Workaround |
+|---|------------|------|-------------|--------|------------|
+| L-15 | **BGP Process Must Pre-exist** | FRR — BGP | VRFPilot does not create the BGP router process. A `router bgp <asn>` block must already exist in FRR before BGP advertisement features are usable. | BGP loopback creation will fail with "No BGP process found" if BGP is not pre-configured. | Pre-configure BGP: `sudo vtysh -c "configure terminal" -c "router bgp 65000" -c "end"`. |
+| L-16 | **OSPF Process Must Pre-exist** | FRR — OSPF | VRFPilot does not create the OSPF router process. `router ospf` (GRT) or `router ospf vrf <name>` must already exist before OSPF features can be used. | OSPF loopback creation will skip FRR config with a warning. | Pre-configure OSPF: `sudo vtysh -c "configure terminal" -c "router ospf" -c "end"`. |
+| L-17 | **No BGP Peer / Neighbor Configuration** | FRR — BGP | VRFPilot configures network advertisements only. It does not configure BGP neighbor statements, peer-groups, route-reflector settings, or session parameters. | Advertised prefixes will not be propagated until BGP peers are manually configured. | Configure BGP peers manually in `vtysh`. |
+| L-18 | **write memory Not Called After Interface Operations** | FRR — Persistence | After creating loopback interfaces and adding BGP/OSPF advertisements, VRFPilot does not call `write memory`. If FRR restarts, all routing advertisements are lost. | Routing advertisements disappear after an FRR restart or system reboot. | Manually run `sudo vtysh -c "write memory"` after creation operations. VRF deletion does call `write memory` automatically. |
+| L-19 | **FRR Config Parsing is Text-Based for OSPF** | FRR — OSPF | OSPF existence checks parse `show running-config` text output. Changes in FRR output formatting across versions could cause silent false-negatives. | OSPF removal may occasionally re-attempt an already-removed statement. | Not operationally harmful — the extra `no network` command is a no-op if the statement is absent. |
+| L-20 | **BGP Existence Check Uses `show bgp` Routing Table** | FRR — BGP | BGP network existence is verified via `show bgp [vrf X] ipv4 unicast` rather than running config. Prefixes not yet in the BGP RIB (e.g. due to policy suppression) will be missed. | A suppressed prefix may not be removed by cleanup. | Check FRR policy/route-map configuration if a prefix is not appearing in `show bgp`. |
+| L-21 | **Single ASN Assumption** | FRR — BGP | VRFPilot assumes all VRF BGP instances share the same ASN as the GRT BGP process (`router bgp <asn>`). Different ASNs per VRF are not supported. | Configurations with different ASNs per VRF will cause incorrect router context selection. | Not applicable in standard FRR deployments — FRR itself requires a consistent ASN across VRF instances. |
+| L-22 | **No FRR Version Compatibility Checking** | FRR — General | VRFPilot does not check the FRR version before issuing commands. Command syntax differences between FRR 8.x and 10.x could cause unexpected failures. | Commands may fail silently on incompatible FRR versions. | Tested on FRR 8.x, 9.x, and 10.x. Check `/var/tmp/loopgen.log` for vtysh output if commands appear to fail. |
+| L-23 | **No FRR Startup Config Modification** | FRR — Persistence | VRFPilot modifies FRR running config only. It does not edit `/etc/frr/frr.conf` directly. | After `systemctl restart frr`, all VRFPilot-applied FRR config is lost unless `write memory` was called. | Run `sudo vtysh -c "write memory"` after completing creation operations. |
+
+
+
+**VRF Management Limitations**
+
+| # | Limitation | Area | Description | Impact | Workaround |
+|---|------------|------|-------------|--------|------------|
+| L-24 | **VRF Routing Table IDs Must Be Unique System-Wide** | VRF — Creation | VRFPilot validates that the chosen routing table ID is not already in use by known VRFs. However, it does not scan `/etc/iproute2/rt_tables` for reserved or externally-used table IDs. | A table ID conflict with a non-VRF route table could cause routing anomalies. | Check `cat /etc/iproute2/rt_tables` and avoid IDs 0 (unspec), 253 (default), 254 (main), 255 (local), and any IDs used by external tools. |
+| L-25 | **Cannot Rename a VRF** | VRF — Management | VRF renaming is not supported. The VRF must be deleted and recreated with the new name. | Renaming a VRF requires deleting all interfaces in it first. | Delete the VRF and recreate it with the desired name, then recreate its interfaces. |
+| L-26 | **VRF Deletion Requires FRR PIM to be Responsive** | VRF — Deletion | Cleaning up `pimreg`/`pim6reg` devices during VRF deletion relies on FRR's PIM daemon responding to `clear ip pim vrf X interfaces`. If PIM is not running or unresponsive, orphaned pimreg interfaces may remain in GRT. | Cosmetic issue: orphaned interfaces appear in GRT but do not affect routing. | Restart FRR (`sudo systemctl restart frr`) to force PIM socket cleanup. |
+| L-27 | **Only LoopGen-Tracked Interfaces Get Full FRR Cleanup** | VRF — Deletion | When deleting a VRF, only interfaces tracked in the state file receive full FRR cleanup (routing advertisement removal). Untracked interfaces (e.g. `ens224` enslaved to the VRF externally) only get kernel-level detachment. | FRR interface stanzas for externally-created interfaces may not be removed. | Manually remove FRR stanzas: `sudo vtysh -c "configure terminal" -c "no interface ens224" -c "end"`. |
+| L-28 | **No VRF Import / Export Route Leaking** | VRF — Routing | VRFPilot does not configure inter-VRF route leaking, VRF import/export policies, or VPN route targets in FRR. | Cannot implement hub-and-spoke or shared services VRF topologies automatically. | Configure route leaking manually in `vtysh` using `ip route` commands or BGP VPNv4. |
+
+---
+
+**State and Persistence Limitations**
+
+| # | Limitation | Area | Description | Impact | Workaround |
+|---|------------|------|-------------|--------|------------|
+| L-29 | **Fixed State File Location** | State — Storage | The state file is always written to `/var/tmp/loopgen_state.json`. This path is not configurable. | Cannot run multiple independent VRFPilot instances with separate state files. | Manually copy/rename the state file between sessions if isolation is needed. |
+| L-30 | **No Multi-Instance Concurrency** | State — Locking | The state file has no file locking. Running two simultaneous VRFPilot instances will cause state corruption. | Race conditions on concurrent writes will produce a corrupted or inconsistent state file. | Never run two instances simultaneously. Use `pgrep -f vrfpilot` to check for running instances. |
+| L-31 | **State File Is Not Encrypted** | State — Security | The state file contains IP addresses, VRF names, BGP ASNs, and interface metadata in plain-text JSON. | Sensitive network topology information is world-readable at `/var/tmp/loopgen_state.json`. | Restrict file permissions: `sudo chmod 600 /var/tmp/loopgen_state.json`. Consider moving it to `/root/` for root-only access. |
+| L-32 | **Stale State After Manual Interface Deletion** | State — Consistency | If a kernel interface or VRF is deleted outside VRFPilot (e.g. `ip link del loop001`), the state file retains the entry. VRFPilot will warn about the mismatch but will not auto-reconcile. | The state file becomes inconsistent with the kernel. `show interfaces` may list interfaces that no longer exist. | Manually remove stale entries from the state file, or use VRFPilot's cleanup menu to delete the entry (it will skip the already-absent kernel device). |
+| L-33 | **No State Backup or Versioning** | State — Management | The state file is overwritten on every save with no backup or rollback capability. | An interrupted write (power failure, kill -9) could corrupt the state file. | The atomic write-then-rename strategy minimises this risk. For extra safety: `cp /var/tmp/loopgen_state.json ~/loopgen_backup.json` before large operations. |
+| L-34 | **Log File Not Rotated** | Logging | `/var/tmp/loopgen.log` grows without bound. There is no built-in log rotation. | On systems with heavy VRFPilot usage the log file may consume significant disk space in `/var/tmp`. | Set up `logrotate`: `echo '/var/tmp/loopgen.log { daily rotate 7 compress missingok }' | sudo tee /etc/logrotate.d/vrfpilot`. |
+
+---
+
+**Operational and Scalability Limitations**
+
+| # | Limitation | Area | Description | Impact | Workaround |
+|---|------------|------|-------------|--------|------------|
+| L-35 | **Interactive CLI Only — No Automation API** | Operations | VRFPilot is exclusively an interactive terminal application. It has no REST API, gRPC interface, NETCONF/YANG model, Python importable library, or CLI argument mode. | Cannot be called from Ansible, Terraform, CI/CD pipelines, or other automation tools. | For automated workflows, use `ip` commands + `vtysh` directly, or wait for a future automation-friendly version. |
+| L-36 | **Single-Node Scope** | Operations | VRFPilot manages only the local Linux system. It cannot push configuration to remote hosts or synchronise VRF topology across a fleet of nodes. | Not suitable for multi-node lab provisioning without wrapper scripts. | Use Ansible or similar tools to distribute VRFPilot execution across nodes via SSH. |
+| L-37 | **No Bulk Import from File** | Operations | Interfaces and VRFs must be created interactively through the menu. There is no facility to read a YAML/JSON/CSV configuration file and provision in bulk. | Large-scale provisioning (100+ interfaces) requires many interactive prompts. | Automate input using `expect` or pipe responses: `echo -e "2\n1\n5\ntest\nloop\n1\n1\ny" \| sudo python3 vrfpilot.py`. |
+| L-38 | **No Undo / Rollback History** | Operations | There is no transaction history or multi-step undo capability. The only rollback is per-interface at creation time (if FRR config fails). | Cannot undo a series of creation steps as a batch. | Use the cleanup menu immediately after an unwanted creation to remove specific interfaces. |
+| L-39 | **No Interface Health Monitoring** | Monitoring | VRFPilot displays interface state at query time but does not monitor interfaces continuously, alert on state changes, or track interface flaps. | No notification if a created loopback goes down unexpectedly. | Integrate with external monitoring tools (Prometheus node_exporter, Nagios, Zabbix) for continuous monitoring. |
+| L-40 | **Random IP May Exhaust After ~1000 Attempts** | IP Allocation | The random IP generator tries up to 1000 candidates before failing. On systems with thousands of existing RFC1918 addresses, it may fail to find a unique IP. | Creation fails with "No unique random IP after 1000 attempts". | Use subnet mode instead of random mode when a large number of interfaces already exist. |
+| L-41 | **No IPAM Integration** | IP Allocation | VRFPilot has no integration with external IPAM systems (NetBox, Infoblox, phpIPAM). IP allocation is local-only based on the state file and kernel address table. | Allocated IPs are not registered in the organisation's IPAM, risking IP conflicts with other systems. | Export the state file to IPAM after provisioning: `cat /var/tmp/loopgen_state.json \| python3 -c "import sys,json; [print(v['ip']) for v in json.load(sys.stdin)['interfaces'].values()]"`. |
+
+**Security Limitations**
+
+| # | Limitation | Area | Description | Impact | Workaround |
+|---|------------|------|-------------|--------|------------|
+| L-42 | **Requires Root Privileges** | Security | All operations require root (`sudo`) because RTNETLINK write operations require `CAP_NET_ADMIN`. There is no privilege separation or capability dropping after startup. | VRFPilot runs with full root access for its entire lifetime. | Review the source code before running. Consider running in a dedicated container or VM with limited blast radius. |
+| L-43 | **No Input Sanitisation Beyond Basic Validation** | Security | User inputs (VRF names, interface prefixes, tags) are sanitised with regex but are passed to `vtysh` as shell arguments. Extremely crafted inputs could theoretically produce unexpected vtysh commands. | Theoretical command injection risk via vtysh arguments. | VRFPilot is designed for trusted operators in controlled environments, not as a public-facing service. |
+| L-44 | **vtysh Commands Not Authenticated** | Security | VRFPilot assumes the operator running it has unrestricted `vtysh` access. FRR RBAC or AAA authentication for vtysh is not handled. | If FRR vtysh has access controls configured, VRFPilot operations may fail silently. | Ensure the user running VRFPilot has unrestricted vtysh access (typically requires root or membership in the `frrvty` group). |
+| L-45 | **No Audit Trail Beyond Log File** | Security | Operations are logged to `/var/tmp/loopgen.log` but this is a local flat file with no integrity protection, no remote syslog forwarding, and no tamper detection. | Log file can be modified or deleted by any root-level process. | Forward logs to a remote syslog server: configure `rsyslog` or `journald` forwarding. |
+
+**Platform Limitations**
+
+| # | Limitation | Area | Description | Impact | Workaround |
+|---|------------|------|-------------|--------|------------|
+| L-46 | **Linux Only** | Platform | VRFPilot uses `pyroute2` (Linux RTNETLINK) and `vtysh` (FRR). It does not run on macOS, FreeBSD, Windows, or any non-Linux platform. | Cannot be used on non-Linux systems. | Use a Linux VM or container (Docker with `--privileged` and host networking). |
+| L-47 | **Ubuntu / Debian Focused** | Platform | Tested on Ubuntu 20.04, 22.04, and 24.04. Other distributions (RHEL, Fedora, Alpine) may work but are untested. Package names and paths may differ. | Unexpected behaviour on non-Debian distributions. | Adapt the installation steps for your distribution's package manager. The Python code itself is distribution-agnostic. |
+| L-48 | **Python 3.8 Minimum** | Platform | Uses `importlib.metadata` (stdlib since 3.8) and several 3.8+ type hint features. Python 3.6 and 3.7 are not supported. | Will not run on systems with Python < 3.8. | Upgrade Python: `sudo apt install python3.10` or use `pyenv`. |
+| L-49 | **No Container-Native VRF Support** | Platform | Linux VRF devices require `CAP_NET_ADMIN` and access to the host network namespace. In Docker containers, VRFs are only available with `--privileged` or `--cap-add NET_ADMIN` and host networking (`--network host`). | Cannot be used in standard unprivileged containers. | Run with: `docker run --privileged --network host -it ubuntu:22.04 python3 vrfpilot.py`. |
+| L-50 | **Kernel Version Dependency for VRF** | Platform | Linux VRF support (`CONFIG_NET_VRF`) was introduced in kernel 4.3. Full feature stability (including correct RTNETLINK enslavement ordering) requires kernel 5.4+. | On kernels < 5.4, interface VRF placement may not work correctly. | Upgrade to Ubuntu 20.04+ which ships with kernel 5.4 or later. |
+
+---
+
+**Summary Table**
+
+| Category | Count | Critical | Minor |
+|---|---|---|---|
+| Protocol and Address Family | 7 (L-01 to L-07) | L-01, L-07 | L-02 to L-06 |
+| Interface and Kernel | 7 (L-08 to L-14) | L-11, L-12 | L-08 to L-10, L-13, L-14 |
+| FRR Integration | 9 (L-15 to L-23) | L-15, L-16, L-18 | L-17, L-19 to L-23 |
+| VRF Management | 5 (L-24 to L-28) | L-26, L-27 | L-24, L-25, L-28 |
+| State and Persistence | 6 (L-29 to L-34) | L-30, L-31 | L-29, L-32 to L-34 |
+| Operational and Scalability | 7 (L-35 to L-41) | L-35 | L-36 to L-41 |
+| Security | 4 (L-42 to L-45) | L-42, L-43 | L-44, L-45 |
+| Platform | 5 (L-46 to L-50) | L-46, L-48 | L-47, L-49, L-50 |
+| **Total** | **50** | **16** | **34** |
+
+---
+
+> **Legend:**
+> - **Critical** — may prevent a primary use case from working in common scenarios
+> - **Minor** — edge case, cosmetic, or has a straightforward workaround
 ---
 
 ## Troubleshooting
