@@ -192,11 +192,11 @@ To use OSPF or BGP integration:
 
 ```bash
 # Clone the repository
-git clone https://github.com/your-org/LoopGen.git
+git clone https://github.com/waqasdaar/loopgen.git
 cd LoopGen
 
 # Or download the single script directly
-wget https://raw.githubusercontent.com/your-org/LoopGen/main/LoopGen.py
+wget https://github.com/waqasdaar/loopgen/blob/main/loopgen.py
 ```
 
 ### Step 2 — Install Python Dependencies
