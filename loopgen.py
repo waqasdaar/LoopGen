@@ -8,30 +8,7 @@
 ║  Platform  : Ubuntu Linux 20.04 / 22.04 / 24.04                              ║
 ║  Python    : 3.8 — 3.12                                                      ║
 ║  FRR       : 8.x / 9.x / 10.x  (optional — gracefully disabled if absent)    ║
-╠══════════════════════════════════════════════════════════════════════════════╣
-║  CHANGELOG v2.9.7                                                            ║
-║  ─────────────────                                                           ║
-║  FIX — VRF deletion does not fully clean FRR configuration:                  ║
-║                                                                              ║
-║  Root cause:                                                                 ║
-║    remove_vrf() was set non-fatal (always returns True) in v2.9.4 to         ║
-║    handle the "Only inactive VRFs can be deleted" race condition.            ║
-║    This meant FRR VRF stanza removal silently did nothing when it failed.    ║
-║    Additionally, FRR BGP and OSPF router instances for the VRF were          ║
-║    never removed, leaving stale 'router bgp X vrf Y' and                     ║
-║    'router ospf vrf Y' stanzas in the running config.                        ║
-║                                                                              ║
-║  Fix — FRRManager.remove_vrf_complete():                                     ║
-║    New comprehensive VRF removal method that:                                ║
-║      1. Removes BGP VRF instance ('no router bgp <asn> vrf <name>')          ║
-║      2. Removes OSPF VRF instance ('no router ospf vrf <name>')              ║
-║      3. Removes the VRF stanza ('no vrf <name>')                             ║
-║      4. Verifies each step by re-reading running config                      ║
-║      5. Retries with 'write memory' if initial removal is incomplete         ║
-║    Called by VRFManager._delete_vrf() Step 4 (after kernel VRF deletion).    ║
-║                                                                              ║
-║  Also fixes: remove_vrf() now properly reports failures but continues        ║
-║  (non-fatal for VRF stanza after kernel device already deleted).             ║
+║  Author    : Waqas Daar (waqasdaar@gmail.com)                                ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
 """
 
