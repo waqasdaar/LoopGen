@@ -11,7 +11,8 @@
 
 # LoopGen — VRF-Aware Loopback Interface Manager
 
-**Production-grade interactive CLI for Linux loopback interface lifecycle management with FRR routing integration**
+**Production-grade interactive CLI for Linux loopback interface  
+lifecycle management with FRR routing integration**
 
 [![Platform](https://img.shields.io/badge/platform-Ubuntu%20Linux-orange?logo=ubuntu)](https://ubuntu.com)
 [![Python](https://img.shields.io/badge/python-3.8%20%7C%203.9%20%7C%203.10%20%7C%203.11%20%7C%203.12-blue?logo=python)](https://python.org)
@@ -38,7 +39,7 @@
    - [Step 3 — Install and Configure FRR](#step-3--install-and-configure-frr)
    - [Step 4 — Verify Installation](#step-4--verify-installation)
 6. [Running the Application](#running-the-application)
-   - [Starting the Application](#starting-the-application)
+   - [Starting LoopGen](#starting-loopgen)
    - [Main Menu Reference](#main-menu-reference)
 7. [Use Cases](#use-cases)
    - [Use Case 1 — Create a VRF and Loopbacks with BGP Advertisement](#use-case-1--create-a-vrf-and-loopbacks-with-bgp-advertisement)
@@ -52,37 +53,53 @@
    - [Use Case 9 — Emergency Cleanup on Abrupt Exit](#use-case-9--emergency-cleanup-on-abrupt-exit)
 8. [State and Log Files](#state-and-log-files)
 9. [FRR BGP VRF Model Reference](#frr-bgp-vrf-model-reference)
-10. [Limitations](#limitations)
+10. [Known Limitations](#known-limitations)
 11. [Troubleshooting](#troubleshooting)
 
 ---
 
 ## Introduction
 
-**LoopGen** is a production-grade interactive command-line tool for **Ubuntu Linux** that manages the complete lifecycle of loopback (dummy) interfaces in **VRF-aware** network environments. It integrates directly with **[FRR (Free Range Routing)](https://frrouting.org/)** to automate routing protocol advertisement alongside every interface operation.
+**LoopGen** is a production-grade interactive command-line tool for
+**Ubuntu Linux** that manages the complete lifecycle of loopback (dummy)
+interfaces in **VRF-aware** network environments. It integrates directly
+with **FRR (Free Range Routing)** to automate routing protocol
+advertisement alongside every interface operation.
 
-The tool is designed for **network automation engineers**, **lab operators**, and **infrastructure teams** who need to rapidly provision, test, and decommission loopback prefixes across multiple VRFs without writing one-off scripts or manually coordinating kernel operations with FRR configuration.
+The tool is designed for **network automation engineers**, **lab
+operators**, and **infrastructure teams** who need to rapidly provision,
+test, and decommission loopback prefixes across multiple VRFs without
+writing one-off scripts or manually coordinating kernel operations with
+FRR configuration.
 
-### What problem does it solve?
+### What problem does LoopGen solve?
 
-Managing loopbacks in a multi-VRF environment involves at least three separate systems:
+Managing loopbacks in a multi-VRF environment involves at least four
+separate systems:
 
-| Layer | Manually requires |
+| Layer | Without LoopGen |
 |---|---|
-| **Linux kernel** | `ip link`, `ip addr`, `ip route` commands |
+| **Linux kernel** | Manual `ip link`, `ip addr`, `ip route` commands |
 | **VRF placement** | Precise netlink ordering (enslave before IP assign) |
-| **FRR routing** | `vtysh` config for OSPF/BGP per VRF |
+| **FRR routing** | Manual `vtysh` config for OSPF/BGP per VRF |
 | **State tracking** | Custom scripts to remember what was created |
 
-LoopGen handles all four layers from a single interactive menu — with validation, rollback on failure, and complete cleanup on exit.
+LoopGen handles all four layers from a single interactive menu — with
+validation, rollback on failure, and complete cleanup on exit.
 
-### What makes it different?
+### What makes LoopGen different?
 
-- **Zero shell parsing** — all kernel operations use `pyroute2` RTNETLINK directly
-- **Atomic VRF placement** — single netlink socket session guarantees interfaces land in the correct VRF routing table, not the main table
-- **FRR-aware cleanup** — deleting an interface removes BGP/OSPF advertisements, FRR interface stanzas, and the kernel device in the correct order
-- **Full VRF lifecycle** — create and delete entire VRFs including their FRR BGP/OSPF instances, interface stanzas, and kernel devices
-- **Emergency cleanup** — `Ctrl+C`, `Ctrl+Z`, and `Ctrl+\` trigger an interactive cleanup wizard
+- **Zero shell parsing** — all kernel operations use `pyroute2`
+  RTNETLINK directly
+- **Atomic VRF placement** — single netlink socket session guarantees
+  interfaces land in the correct VRF routing table, not the main table
+- **FRR-aware cleanup** — deleting an interface removes BGP/OSPF
+  advertisements, FRR interface stanzas, and the kernel device in the
+  correct order
+- **Full VRF lifecycle** — create and delete entire VRFs including their
+  FRR BGP/OSPF instances, interface stanzas, and kernel devices
+- **Emergency cleanup** — `Ctrl+C`, `Ctrl+Z`, and `Ctrl+\` trigger an
+  interactive cleanup wizard
 
 ---
 
@@ -109,18 +126,18 @@ LoopGen handles all four layers from a single interactive menu — with validati
 ## Architecture Overview
 
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                         LoopGen CLI                                 │
-├──────────────┬───────────────┬────────────────┬─────────────────────┤
-│ StateManager │ KernelManager │  FRRManager    │  DisplayManager     │
-│              │               │                │                     │
-│ JSON file    │  pyroute2     │  vtysh         │  PrettyTable        │
-│ /var/tmp/    │  RTNETLINK    │  OSPF / BGP    │  colorama           │
-│ loopgen_     │  (no shell    │  VRF-aware     │  grouped tables     │
-│ state.json   │   parsing)    │  config        │                     │
-├──────────────┴───────────────┴────────────────┴─────────────────────┤
-│  LoopbackCreator │ CleanupManager │ VRFManager │ InterfaceManager   │
-└─────────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────┐
+│                        LoopGen CLI                               │
+├──────────────┬───────────────┬───────────────┬───────────────────┤
+│ StateManager │ KernelManager │  FRRManager   │  DisplayManager   │
+│              │               │               │                   │
+│ JSON file    │  pyroute2     │  vtysh        │  PrettyTable      │
+│ /var/tmp/    │  RTNETLINK    │  OSPF / BGP   │  colorama         │
+│ loopgen_     │  (no shell    │  VRF-aware    │  grouped tables   │
+│ state.json   │   parsing)    │  config       │                   │
+├──────────────┴───────────────┴───────────────┴───────────────────┤
+│  LoopbackCreator │ CleanupManager │ VRFManager │ InterfaceManager │
+└──────────────────────────────────────────────────────────────────┘
 ```
 
 ### Component responsibilities
@@ -155,7 +172,7 @@ LoopGen handles all four layers from a single interactive menu — with validati
 
 Install using `pip install -r requirements.txt`:
 
-```
+```text
 # requirements.txt
 
 # Kernel networking — all interface/VRF operations via RTNETLINK
@@ -169,11 +186,14 @@ prettytable>=3.0.0
 colorama>=0.4.6
 ```
 
-> **Note:** LoopGen uses only Python standard library modules beyond these three packages (`json`, `logging`, `signal`, `subprocess`, `re`, `ipaddress`, `pathlib`, etc.).
+> **Note:** LoopGen uses only Python standard library modules beyond
+> these three packages (`json`, `logging`, `signal`, `subprocess`, `re`,
+> `ipaddress`, `pathlib`, etc.).
 
 ### FRR Requirements
 
-FRR is **optional**. Without it, LoopGen creates and manages kernel interfaces normally — routing protocol options are gracefully disabled.
+FRR is **optional**. Without it, LoopGen creates and manages kernel
+interfaces normally — routing protocol options are gracefully disabled.
 
 To use OSPF or BGP integration:
 
@@ -193,7 +213,7 @@ To use OSPF or BGP integration:
 ```bash
 # Clone the repository
 git clone https://github.com/waqasdaar/LoopGen.git
-cd LoopGen
+cd loopgen
 
 # Or download the single script directly
 wget https://github.com/waqasdaar/LoopGen/blob/main/loopgen.py
@@ -217,7 +237,8 @@ pip install -r requirements.txt
 
 ### Step 3 — Install and Configure FRR
 
-Skip this step if you only need kernel interface management without routing protocol integration.
+Skip this step if you only need kernel interface management without
+routing protocol integration.
 
 ```bash
 # Add FRR official repository
@@ -243,7 +264,9 @@ sudo systemctl enable frr
 sudo vtysh -c "show version"
 ```
 
-#### Minimum BGP configuration (required before using BGP features)
+#### Minimum BGP configuration
+
+Required before using BGP features in LoopGen:
 
 ```bash
 sudo vtysh << 'EOF'
@@ -258,7 +281,9 @@ write memory
 EOF
 ```
 
-#### Minimum OSPF configuration (required before using OSPF features)
+#### Minimum OSPF configuration
+
+Required before using OSPF features in LoopGen:
 
 ```bash
 sudo vtysh << 'EOF'
@@ -274,23 +299,24 @@ EOF
 
 ```bash
 # Verify Python dependencies
-python3 -c "import pyroute2, prettytable, colorama; print('OK')"
+python3 -c "import pyroute2, prettytable, colorama; print('All OK')"
 
-# Quick pre-flight check (no interfaces created)
-sudo python3 loopgen.py --help 2>/dev/null || echo "Run without args"
+# Verify FRR connectivity
+sudo vtysh -c "show version"
 
-# Create a test VRF to verify kernel VRF support
+# Verify kernel VRF support
 sudo ip link add vrf-test type vrf table 99
 sudo ip link set vrf-test up
 ip link show type vrf
 sudo ip link del vrf-test
+echo "Kernel VRF support: OK"
 ```
 
 ---
 
 ## Running the Application
 
-### Starting the Application
+### Starting LoopGen
 
 LoopGen requires root privileges for RTNETLINK socket operations:
 
@@ -302,22 +328,19 @@ sudo python3 loopgen.py
 sudo /path/to/venv/bin/python loopgen.py
 ```
 
-On successful startup you will see the banner followed by the main menu:
+On successful startup you will see the LoopGen banner followed by
+the main menu:
 
 ```
-  ██╗      ██████╗  ██████╗ ██████╗  ██████╗ ███████╗███╗   ██╗
-  ██║     ██╔═══██╗██╔═══██╗██╔══██╗██╔════╝ ██╔════╝████╗  ██║
-  ██║     ██║   ██║██║   ██║██████╔╝██║  ███╗█████╗  ██╔██╗ ██║
-  ██║     ██║   ██║██║   ██║██╔═══╝ ██║   ██║██╔══╝  ██║╚██╗██║
-  ███████╗╚██████╔╝╚██████╔╝██║     ╚██████╔╝███████╗██║ ╚████║
-  ╚══════╝ ╚═════╝  ╚═════╝ ╚═╝      ╚═════╝ ╚══════╝╚═╝  ╚═══╝
+  ██╗      ██████╗  ██████╗ ...
+  ...
 
   Production Loopback Manager + FRR  |  v2.9.7
   State : /var/tmp/loopgen_state.json
   Log   : /var/tmp/loopgen.log
 
   FRR: OK  |  Tracked: 0  |  VRFs detected: 2
-  
+
   ────────────────────────────────────────────────────
   Main Menu
   ────────────────────────────────────────────────────
@@ -338,13 +361,13 @@ On successful startup you will see the banner followed by the main menu:
 | Option | Description |
 |---|---|
 | `[1] Show Interfaces` | Display all interfaces grouped by VRF. Excludes VRF master devices and FRR-internal pimreg devices. |
-| `[2] Create Loopbacks` | Interactive wizard: select VRF(s), count, name prefix, IP mode, routing protocol |
-| `[3] Cleanup Loopbacks` | Delete tracked interfaces by tag, name, or all — removes FRR config and kernel devices |
-| `[4] Show FRR Config` | Print the complete FRR running configuration |
-| `[5] Show Detected VRFs` | List all kernel VRF devices with table IDs |
-| `[6] VRF Manager` | Create or delete VRFs (kernel + FRR BGP/OSPF/stanza) |
-| `[7] Interface Manager` | Move interfaces to different VRFs or reconfigure IP addresses |
-| `[8] Exit` | Save state and exit cleanly |
+| `[2] Create Loopbacks` | Interactive wizard: select VRF(s), count, name prefix, IP mode, routing protocol. |
+| `[3] Cleanup Loopbacks` | Delete tracked interfaces by tag, name, or all — removes FRR config and kernel devices. |
+| `[4] Show FRR Config` | Print the complete FRR running configuration. |
+| `[5] Show Detected VRFs` | List all kernel VRF devices with table IDs. |
+| `[6] VRF Manager` | Create or delete VRFs (kernel + FRR BGP/OSPF/stanza). |
+| `[7] Interface Manager` | Move interfaces to different VRFs or reconfigure IP addresses. |
+| `[8] Exit` | Save state and exit cleanly. |
 
 ---
 
@@ -352,13 +375,14 @@ On successful startup you will see the banner followed by the main menu:
 
 ### Use Case 1 — Create a VRF and Loopbacks with BGP Advertisement
 
-**Scenario:** Provision a new VRF `vrf100` with routing table 100, then create 3 loopback interfaces inside it and advertise them via BGP.
+**Scenario:** Provision a new VRF `vrf100` with routing table 100, then
+create 3 loopback interfaces inside it and advertise them via BGP.
 
 #### Step 1 — Create the VRF
 
 ```
-➤  Select [1]: 6          # VRF Manager
-➤  Choice [4]: 1          # Create new VRF
+➤  Select [1]: 6           # VRF Manager
+➤  Choice [4]: 1           # Create new VRF
 ➤  VRF name: vrf100
 ➤  Routing table ID: 100
 ➤  Proceed? [y/N]: y
@@ -366,15 +390,15 @@ On successful startup you will see the banner followed by the main menu:
 ✔  VRF 'vrf100' created (table=100)
 ```
 
-**What happened:**
-- Kernel VRF device `vrf100` created with routing table 100
-- FRR stanza `vrf vrf100 / exit-vrf` added to running config
-- Entry added to state file
+**What LoopGen did:**
+- Created kernel VRF device `vrf100` with routing table 100
+- Added FRR stanza `vrf vrf100 / exit-vrf` to running config
+- Persisted entry to `/var/tmp/loopgen_state.json`
 
 #### Step 2 — Create loopbacks in the new VRF
 
 ```
-➤  Select [1]: 2          # Create Loopbacks
+➤  Select [1]: 2           # Create Loopbacks
 
 Available VRFs:
   [0] GRT
@@ -384,11 +408,11 @@ Available VRFs:
 ➤  Number of loopbacks: 3
 ➤  Tag/label: bgp-test
 ➤  Interface name prefix: loop
-➤  IP Mode [1]: 1         # Random RFC1918
-➤  Protocol [1]: 3        # BGP
+➤  IP Mode [1]: 1          # Random RFC1918
+➤  Protocol [1]: 3         # BGP
 ➤  Proceed? [y/N]: y
 
-✔  loop001  ip=10.45.12.7/32   vrf=vrf100  tag=bgp-test  protocol=BGP
+✔  loop001  ip=10.45.12.7/32    vrf=vrf100  tag=bgp-test  protocol=BGP
 ✔  loop002  ip=172.19.88.41/32  vrf=vrf100  tag=bgp-test  protocol=BGP
 ✔  loop003  ip=192.168.44.5/32  vrf=vrf100  tag=bgp-test  protocol=BGP
 ```
@@ -401,10 +425,10 @@ sudo vtysh -c "show bgp vrf vrf100 ipv4 unicast"
 
 ```
 BGP table version is 3, local router ID is 10.0.0.1
-   Network          Next Hop    Metric  Path
-*> 10.45.12.7/32    0.0.0.0          0 i
-*> 172.19.88.41/32  0.0.0.0          0 i
-*> 192.168.44.5/32  0.0.0.0          0 i
+   Network            Next Hop    Metric  Path
+*> 10.45.12.7/32      0.0.0.0          0 i
+*> 172.19.88.41/32    0.0.0.0          0 i
+*> 192.168.44.5/32    0.0.0.0          0 i
 ```
 
 #### Verify in kernel
@@ -414,9 +438,9 @@ ip -4 addr show master vrf100
 ```
 
 ```
-8: loop001: <BROADCAST,NOARP,UP,LOWER_UP>
+8:  loop001: <BROADCAST,NOARP,UP,LOWER_UP>
     inet 10.45.12.7/32 scope global loop001
-9: loop002: <BROADCAST,NOARP,UP,LOWER_UP>
+9:  loop002: <BROADCAST,NOARP,UP,LOWER_UP>
     inet 172.19.88.41/32 scope global loop002
 10: loop003: <BROADCAST,NOARP,UP,LOWER_UP>
     inet 192.168.44.5/32 scope global loop003
@@ -426,7 +450,8 @@ ip -4 addr show master vrf100
 
 ### Use Case 2 — Create Loopbacks with OSPF in an Existing VRF
 
-**Scenario:** Create 2 loopback interfaces in `vrf10` using OSPF network statements in area `0.0.0.0`.
+**Scenario:** Create 2 loopback interfaces in `vrf10` using OSPF network
+statements in area `0.0.0.0`.
 
 ```
 ➤  Select [1]: 2
@@ -440,11 +465,11 @@ Available VRFs:
 ➤  Number of loopbacks: 2
 ➤  Tag/label: ospf-loopbacks
 ➤  Interface name prefix: lo
-➤  IP Mode [1]: 2         # From subnet
+➤  IP Mode [1]: 2          # From subnet
 ➤  Subnet: 10.100.0.0/24
-➤  Protocol [1]: 2        # OSPF
-➤  OSPF Method [1]: 1     # network statement
-➤  OSPF area [0.0.0.0]:   # Press Enter for default
+➤  Protocol [1]: 2         # OSPF
+➤  OSPF Method [1]: 1      # network statement
+➤  OSPF area [0.0.0.0]:    # Press Enter for default
 ➤  Proceed? [y/N]: y
 
 ✔  lo001  ip=10.100.0.1/32  vrf=vrf10  protocol=OSPF
@@ -467,26 +492,27 @@ router ospf vrf vrf10
 
 ### Use Case 3 — Bulk Loopback Creation Across Multiple VRFs
 
-**Scenario:** Create loopbacks in both `vrf10` and `vrf20` simultaneously in one session.
+**Scenario:** Create loopbacks in both `vrf10` and `vrf20`
+simultaneously in one LoopGen session.
 
 ```
 ➤  Select [1]: 2
 
-➤  VRF numbers: 1,2       # Comma-separated selection
+➤  VRF numbers: 1,2        # Comma-separated selection
 
 ─── VRF: vrf10
 ➤  Number of loopbacks: 4
 ➤  Tag/label: infra
 ➤  Interface name prefix: loop
-➤  IP Mode: 1             # Random
-➤  Protocol: 1            # None
+➤  IP Mode: 1              # Random
+➤  Protocol: 1             # None
 
 ─── VRF: vrf20
 ➤  Number of loopbacks: 4
 ➤  Tag/label: infra
 ➤  Interface name prefix: loop
-➤  IP Mode: 1             # Random
-➤  Protocol: 3            # BGP
+➤  IP Mode: 1              # Random
+➤  Protocol: 3             # BGP
 ➤  Proceed? [y/N]: y
 
 ✔  loop001  ip=10.x.x.x/32  vrf=vrf10  protocol=None
@@ -499,23 +525,25 @@ router ospf vrf vrf10
 ✔  loop008  ip=10.x.x.x/32  vrf=vrf20  protocol=BGP
 ```
 
-> Use `all` instead of index numbers to iterate every detected VRF including GRT.
+> Use `all` instead of index numbers to iterate every detected VRF
+> including GRT.
 
 ---
 
 ### Use Case 4 — Create Loopbacks from a Specific Subnet
 
-**Scenario:** Allocate 5 management loopback addresses from `10.200.0.0/24` in `vrf10` with no routing protocol.
+**Scenario:** Allocate 5 management loopback addresses from
+`10.200.0.0/24` in `vrf10` with no routing protocol.
 
 ```
 ➤  Select [1]: 2
-➤  VRF numbers: 1         # vrf10
+➤  VRF numbers: 1          # vrf10
 ➤  Number of loopbacks: 5
 ➤  Tag/label: mgmt
 ➤  Interface name prefix: mgmt
-➤  IP Mode [1]: 2         # From subnet
+➤  IP Mode [1]: 2          # From subnet
 ➤  Subnet: 10.200.0.0/24
-➤  Protocol: 1            # None
+➤  Protocol: 1             # None
 ➤  Proceed? [y/N]: y
 
 ✔  mgmt001  ip=10.200.0.1/32  vrf=vrf10  tag=mgmt
@@ -525,27 +553,29 @@ router ospf vrf vrf10
 ✔  mgmt005  ip=10.200.0.5/32  vrf=vrf10  tag=mgmt
 ```
 
-IPs are allocated sequentially from the subnet, skipping any already in use on the system.
+IPs are allocated sequentially from the subnet, skipping any address
+already in use on the system.
 
 ---
 
 ### Use Case 5 — Move an Interface to a Different VRF
 
-**Scenario:** Move `loop001` from `vrf10` to `vrf20` and advertise it in BGP in the new VRF.
+**Scenario:** Move `loop001` from `vrf10` to `vrf20` and optionally
+advertise it in BGP in the new VRF.
 
 ```
-➤  Select [1]: 7          # Interface Manager
-➤  Choice [3]: 1          # Move interface to a different VRF
+➤  Select [1]: 7           # Interface Manager
+➤  Choice [3]: 1           # Move interface to a different VRF
 
 Select Interface
 ────────────────
 VRF: vrf10
-┌───┬─────────┬───────┬──────────────────┬─────┬──────────┐
-│ # │Interface│ State │ IP Address       │ Tag │ Protocol │
-├───┼─────────┼───────┼──────────────────┼─────┼──────────┤
-│ 0 │ loop001 │ UP    │ 10.200.0.1/32    │ mgmt│ None     │
-│ 1 │ loop002 │ UP    │ 10.200.0.2/32    │ mgmt│ None     │
-└───┴─────────┴───────┴──────────────────┴─────┴──────────┘
+┌───┬──────────┬───────┬────────────────┬──────┬──────────┐
+│ # │Interface │ State │ IP Address     │ Tag  │ Protocol │
+├───┼──────────┼───────┼────────────────┼──────┼──────────┤
+│ 0 │ loop001  │ UP    │ 10.200.0.1/32  │ mgmt │ None     │
+│ 1 │ loop002  │ UP    │ 10.200.0.2/32  │ mgmt │ None     │
+└───┴──────────┴───────┴────────────────┴──────┴──────────┘
 
 ➤  Enter interface # or name: 0
 
@@ -571,13 +601,14 @@ Plan:  Move loop001 → VRF vrf20
 
 ### Use Case 6 — Reconfigure an IP Address on an Interface
 
-**Scenario:** Change the IP address on `mgmt003` from `10.200.0.3/32` to `172.16.50.10/32`.
+**Scenario:** Change the IP address on `mgmt003` from `10.200.0.3/32`
+to `172.16.50.10/32`.
 
 ```
-➤  Select [1]: 7          # Interface Manager
-➤  Choice [3]: 2          # Reconfigure IP address
+➤  Select [1]: 7           # Interface Manager
+➤  Choice [3]: 2           # Reconfigure IP address
 
-[interface selection table shown — grouped by VRF]
+[grouped interface table shown — filtered by VRF]
 
 ➤  Enter interface # or name: mgmt003
 
@@ -597,20 +628,22 @@ Plan:  Replace IPs on mgmt003 with 172.16.50.10/32
 ✔  IP reconfigured on mgmt003: 172.16.50.10/32
 ```
 
-The tool automatically:
+LoopGen automatically:
+
 1. Removes any existing FRR routing advertisements for the old IP
 2. Removes the old IP from the kernel interface
-3. Assigns the new IP
+3. Assigns the new IP to the kernel interface
 4. Offers to advertise the new IP in OSPF or BGP
 
 ---
 
 ### Use Case 7 — Clean Up All Loopbacks by Tag
 
-**Scenario:** Remove all interfaces tagged `bgp-test` that were created in Use Case 1.
+**Scenario:** Remove all interfaces tagged `bgp-test` created in
+Use Case 1.
 
 ```
-➤  Select [1]: 3          # Cleanup Loopbacks
+➤  Select [1]: 3           # Cleanup Loopbacks
 
 [current interface table shown]
 
@@ -629,7 +662,7 @@ Available tags:
 
 ➤  Tag to delete: bgp-test
 
-Will delete:
+The following interfaces will be deleted:
   • loop001
   • loop002
   • loop003
@@ -651,27 +684,29 @@ Will delete:
 ```
 
 Each deleted interface is fully cleaned from:
+
 - FRR BGP/OSPF routing advertisements
 - FRR interface stanza cache (`no interface <name>`)
 - Linux kernel dummy device
-- State file
+- LoopGen state file
 
 ---
 
 ### Use Case 8 — Delete a VRF and All Its Interfaces
 
-**Scenario:** Delete `vrf100` which contains loopback interfaces and FRR PIM internal devices.
+**Scenario:** Delete `vrf100` which contains loopback interfaces and
+FRR PIM internal devices.
 
 ```
-➤  Select [1]: 6          # VRF Manager
-➤  Choice [4]: 2          # Delete existing VRF
+➤  Select [1]: 6           # VRF Manager
+➤  Choice [4]: 2           # Delete existing VRF
 
-┌───┬──────────┬──────────┬────────────────────────────────────┐
-│ # │ VRF Name │ Table ID │ Enslaved Interfaces                 │
-├───┼──────────┼──────────┼────────────────────────────────────┤
-│ 0 │ vrf10    │ 10       │ ens224, loop001, loop002, pimreg10  │
-│ 1 │ vrf100   │ 100      │ pimreg100, pim6reg100               │
-└───┴──────────┴──────────┴────────────────────────────────────┘
+┌───┬──────────┬──────────┬──────────────────────────────────────┐
+│ # │ VRF Name │ Table ID │ Enslaved Interfaces                   │
+├───┼──────────┼──────────┼──────────────────────────────────────┤
+│ 0 │ vrf10    │ 10       │ ens224, loop001, loop002, pimreg10    │
+│ 1 │ vrf100   │ 100      │ pimreg100, pim6reg100                 │
+└───┴──────────┴──────────┴──────────────────────────────────────┘
 
 FRR configuration to be removed:
   • router bgp 65000 vrf vrf100
@@ -679,7 +714,7 @@ FRR configuration to be removed:
 
 ➤  VRF number or name to delete: 1
 
-[enslaved interface table shown]
+[enslaved interface details shown]
 
 ➤  Delete VRF 'vrf100' and all its interfaces? [yes/N]: yes
 
@@ -704,7 +739,9 @@ FRR configuration to be removed:
 
 ### Use Case 9 — Emergency Cleanup on Abrupt Exit
 
-**Scenario:** A user presses `Ctrl+C` while the application is running. LoopGen intercepts the signal and offers to clean up all configuration it created during the session.
+**Scenario:** A user presses `Ctrl+C` while LoopGen is running.
+LoopGen intercepts the signal and offers to clean up all configuration
+it created during the session.
 
 ```
 ^C
@@ -714,12 +751,12 @@ FRR configuration to be removed:
 ════════════════════════════════════════════════════════════════
 
 Emergency Cleanup
-┌──────────┬────────────────┬────────┬──────────┬─────────┐
-│Interface │ IP             │ VRF    │ Protocol │ Tag     │
-├──────────┼────────────────┼────────┼──────────┼─────────┤
-│ loop001  │ 10.45.12.7/32  │ vrf100 │ BGP      │ bgp-test│
-│ loop002  │ 172.19.88.41/32│ vrf100 │ BGP      │ bgp-test│
-└──────────┴────────────────┴────────┴──────────┴─────────┘
+┌──────────┬─────────────────┬────────┬──────────┬──────────┐
+│Interface │ IP              │ VRF    │ Protocol │ Tag      │
+├──────────┼─────────────────┼────────┼──────────┼──────────┤
+│ loop001  │ 10.45.12.7/32   │ vrf100 │ BGP      │ bgp-test │
+│ loop002  │ 172.19.88.41/32 │ vrf100 │ BGP      │ bgp-test │
+└──────────┴─────────────────┴────────┴──────────┴──────────┘
 
 ➤  Delete ALL configuration made by this script? [yes/No]: yes
 
@@ -749,7 +786,8 @@ Script-managed VRFs:
 ✔  Emergency cleanup complete.
 ```
 
-> **Signal support:** `Ctrl+C` (SIGINT), `Ctrl+Z` (SIGTSTP), and `Ctrl+\` (SIGQUIT) all trigger this flow.
+> **Signal support:** `Ctrl+C` (SIGINT), `Ctrl+Z` (SIGTSTP), and
+> `Ctrl+\` (SIGQUIT) all trigger this cleanup flow.
 
 ---
 
@@ -757,7 +795,8 @@ Script-managed VRFs:
 
 ### State file — `/var/tmp/loopgen_state.json`
 
-Persists all created interfaces and VRFs across sessions. Written atomically (write-then-rename) to prevent corruption.
+Persists all interfaces and VRFs created by LoopGen across sessions.
+Written atomically (write-then-rename) to prevent corruption.
 
 ```json
 {
@@ -787,7 +826,7 @@ Persists all created interfaces and VRFs across sessions. Written atomically (wr
 
 ### Log file — `/var/tmp/loopgen.log`
 
-Full DEBUG-level audit trail of every operation.
+Full DEBUG-level audit trail of every LoopGen operation.
 
 ```bash
 # Follow live activity
@@ -807,7 +846,8 @@ sudo grep "vtysh:" /var/tmp/loopgen.log
 
 ## FRR BGP VRF Model Reference
 
-LoopGen uses the correct FRR per-VRF BGP instance model. Understanding this prevents configuration confusion when inspecting FRR manually.
+LoopGen uses the correct FRR per-VRF BGP instance model.
+Understanding this prevents confusion when inspecting FRR manually.
 
 ### Correct syntax (what LoopGen uses)
 
@@ -828,7 +868,7 @@ router bgp 65000 vrf vrf20
 ### Invalid syntax (causes FRR error)
 
 ```
-# WRONG — FRR rejects this with "Unknown command":
+# WRONG — FRR rejects with "Unknown command":
 router bgp 65000
   address-family ipv4 unicast vrf vrf20   ← INVALID
     network 172.16.50.10/32
@@ -836,198 +876,29 @@ router bgp 65000
 
 ---
 
-## Limitations
+## Known Limitations
 
-The following limitations exist in the current version (`v2.9.7`):
+See [LIMITATIONS.md](LIMITATIONS.md) for the full table of known
+limitations, constraints, and workarounds.
 
-### 1. IPv4 Only
-
-LoopGen supports **IPv4 addresses only**. IPv6 interface assignment, IPv6 BGP (`address-family ipv6 unicast`), and OSPFv3 are not implemented.
-
-### 2. Single-Node Operation
-
-LoopGen manages the local Linux system only. It has no mechanism to push configuration to remote nodes, integrate with Ansible/Netconf/RESTCONF, or synchronise state across multiple hosts.
-
-### 3. FRR BGP Peer Configuration
-
-LoopGen configures BGP **network advertisements** (`network X.X.X.X/Y`) but does **not** configure BGP peer relationships (`neighbor`, `peer-group`, `route-reflector`). A BGP process with at least one peer must be pre-configured before LoopGen's BGP features are useful.
-
-### 4. OSPF Process Must Pre-exist
-
-LoopGen adds OSPF network statements or interface-level `ip ospf area` config, but it does **not** create the OSPF router process itself. You must run `router ospf` (GRT) or `router ospf vrf <name>` (VRF) in vtysh before using OSPF features.
-
-### 5. No Interface Sub-types
-
-Only **dummy (loopback-equivalent)** interfaces are created. LoopGen does not create physical, VLAN, bond, bridge, VXLAN, GRE tunnel, or any other interface type.
-
-### 6. No Prefix-Length Customisation for Loopbacks
-
-All created loopback interfaces use `/32` prefix length. Custom prefix lengths (e.g. `/24` loopbacks for summarisation testing) are not supported.
-
-### 7. Single State File — No Multi-Instance Support
-
-The state file is fixed at `/var/tmp/loopgen_state.json`. Running multiple instances simultaneously is not supported and will cause state corruption. The log file is similarly fixed at `/var/tmp/loopgen.log`.
-
-### 8. No Persistent VRF Configuration Across Reboots
-
-VRFs and dummy interfaces created by LoopGen are **not persistent across reboots**. They exist only in the running kernel state. To make them persistent you must integrate with:
-- `/etc/network/interfaces` (ifupdown)
-- `systemd-networkd` `.netdev` + `.network` files
-- A custom `@reboot` cron job or systemd service
-
-### 9. pimreg / pim6reg Cleanup Dependency on FRR PIM State
-
-When a VRF is deleted, FRR-internal PIM registration interfaces (`pimreg<N>`, `pim6reg<N>`) are cleaned up by asking FRR to release its PIM sockets. If the FRR PIM daemon (`pimd`) is not running or does not respond to `clear ip pim vrf X interfaces`, these interfaces may remain orphaned in the kernel's `default` VRF until FRR is restarted.
-
-### 10. No YANG / RESTCONF / gRPC Interface
-
-LoopGen is exclusively an interactive CLI tool. There is no programmatic API, no REST endpoint, and no structured data export beyond the JSON state file.
-
-### 11. FRR `write memory` Not Called After Every Operation
-
-After interface-level operations (loopback creation, BGP network advertisement), LoopGen does **not** call `write memory` to persist FRR config to disk. If FRR restarts, the routing advertisements will be lost. Call `sudo vtysh -c "write memory"` manually after creating interfaces if persistence across FRR restarts is required.
-
-> **Exception:** `remove_vrf_complete()` (called during VRF deletion) does call `write memory` to ensure VRF removal is persisted.
-
-**Protocol and Address Family Limitations**
-
-| # | Limitation | Area | Description | Impact | Workaround |
-|---|------------|------|-------------|--------|------------|
-| L-01 | **IPv4 Only** | Addressing | All IP operations (loopback assignment, BGP/OSPF advertisement, subnet allocation) support IPv4 only. IPv6 addressing is not implemented. | Cannot create IPv6 loopbacks or advertise IPv6 prefixes. | Manually assign IPv6 addresses using `ip -6 addr add` after creation. Configure IPv6 routing in `vtysh` manually. |
-| L-02 | **No OSPFv3** | Routing — OSPF | Only OSPFv2 (IPv4) is supported. OSPFv3 for IPv6 prefixes is not implemented. | IPv6 OSPF integration unavailable. | Configure OSPFv3 manually in `vtysh`. |
-| L-03 | **No BGP IPv6 Address Family** | Routing — BGP | BGP operations use `address-family ipv4 unicast` only. IPv6 unicast, VPNv4, VPNv6, and L2VPN EVPN address families are not supported. | Cannot advertise IPv6 prefixes or EVPN routes. | Configure additional BGP address families manually in `vtysh`. |
-| L-04 | **No BGP Community / Policy Attributes** | Routing — BGP | VRFPilot issues plain `network X.X.X.X/Y` statements with no route-map, community, local-preference, MED, or AS-path prepend. | All advertised prefixes use BGP defaults. | Apply route-maps and policies manually in `vtysh` after advertisement. |
-| L-05 | **No OSPF Cost or Passive Control Per Interface** | Routing — OSPF | When using interface-level OSPF (`ip ospf area`), all interfaces are set as `ip ospf passive`. OSPF cost, hello/dead intervals, and authentication are not configurable. | Cannot fine-tune OSPF timers or enable OSPF adjacencies on loopback interfaces. | Modify OSPF interface parameters manually in `vtysh` after creation. |
-| L-06 | **No IS-IS or Static Route Integration** | Routing | Only OSPF and BGP are supported as routing protocols. IS-IS, RIP, static route injection, and BFD integration are not implemented. | Cannot advertise loopbacks into IS-IS or via static routes. | Configure IS-IS or static routes manually in `vtysh`. |
-| L-07 | **Fixed /32 Prefix for Loopback Interfaces** | Addressing | All loopback interfaces are created with a `/32` host prefix. Custom prefix lengths (e.g. `/24` for summarisation) are not supported. | Cannot simulate subnet loopbacks or test summarisation with non-/32 prefixes. | After creation, manually add a secondary address with the desired prefix: `ip addr add 10.0.0.0/24 dev loop001`. |
-
----
-
-**Interface and Kernel Limitations**
-
-| # | Limitation | Area | Description | Impact | Workaround |
-|---|------------|------|-------------|--------|------------|
-| L-08 | **Dummy Interfaces Only** | Interface Type | VRFPilot creates `dummy` kernel interfaces exclusively. It cannot create physical, VLAN (802.1Q), bond, bridge, VXLAN, GRE tunnel, IPIP, macvlan, or any other interface type. | Cannot use VRFPilot to provision production interface types. | Pre-create the required interface type manually, then use Interface Manager (option 7) to assign it to a VRF. |
-| L-09 | **No Interface Rename** | Interface Naming | Interface names follow the `<prefix><number>` format (e.g. `loop001`). Renaming an existing interface is not supported. | Cannot change an interface name after creation without deleting and recreating it. | Delete the interface and recreate it with the desired name prefix. |
-| L-10 | **Interface Names Limited to 15 Characters** | Interface Naming | Linux `IFNAMSIZ` limits interface names to 15 characters. Long prefixes are silently truncated. | A prefix longer than 12 characters leaves no room for the 3-digit number suffix. | Use short prefixes (≤ 8 characters recommended). |
-| L-11 | **No Persistence Across Reboots** | Kernel State | Dummy interfaces and VRF devices exist only in running kernel state. They are lost on reboot. The state file persists but the kernel objects do not. | After a reboot, the state file will reference interfaces that no longer exist in the kernel. | Integrate with `systemd-networkd`, `/etc/network/interfaces`, or write a startup script that re-runs VRFPilot to recreate from state. |
-| L-12 | **pimreg / pim6reg Cleanup Requires FRR PIM Cooperation** | FRR-Internal Interfaces | PIM registration interfaces (`pimreg<N>`, `pim6reg<N>`) are owned by FRR's PIM daemon. They reject `RTM_DELLINK` and `IFLA_MASTER=0` from the kernel. VRFPilot clears them by asking FRR to release its PIM sockets. | If FRR's PIM daemon is unresponsive, pimreg/pim6reg interfaces may remain orphaned in the GRT after VRF deletion. | Restart FRR (`sudo systemctl restart frr`) to force PIM socket release. |
-| L-13 | **No ECMP or Multiple Addresses Per Interface** | IP Addressing | Each loopback interface is created with exactly one IP address. Equal-Cost Multi-Path (ECMP) and multiple IP addresses per loopback are not managed by VRFPilot. | Cannot simulate ECMP scenarios directly. | Manually add secondary addresses using `ip addr add` after creation. |
-| L-14 | **Single Master (VRF) Per Interface** | VRF Placement | Each interface can belong to exactly one VRF. Linux does not support an interface belonging to multiple VRFs simultaneously. | Cannot share a loopback between two VRFs. | Create separate loopback interfaces for each VRF that needs the prefix. |
-
-
-
-**FRR Integration Limitations**
-
-| # | Limitation | Area | Description | Impact | Workaround |
-|---|------------|------|-------------|--------|------------|
-| L-15 | **BGP Process Must Pre-exist** | FRR — BGP | VRFPilot does not create the BGP router process. A `router bgp <asn>` block must already exist in FRR before BGP advertisement features are usable. | BGP loopback creation will fail with "No BGP process found" if BGP is not pre-configured. | Pre-configure BGP: `sudo vtysh -c "configure terminal" -c "router bgp 65000" -c "end"`. |
-| L-16 | **OSPF Process Must Pre-exist** | FRR — OSPF | VRFPilot does not create the OSPF router process. `router ospf` (GRT) or `router ospf vrf <name>` must already exist before OSPF features can be used. | OSPF loopback creation will skip FRR config with a warning. | Pre-configure OSPF: `sudo vtysh -c "configure terminal" -c "router ospf" -c "end"`. |
-| L-17 | **No BGP Peer / Neighbor Configuration** | FRR — BGP | VRFPilot configures network advertisements only. It does not configure BGP neighbor statements, peer-groups, route-reflector settings, or session parameters. | Advertised prefixes will not be propagated until BGP peers are manually configured. | Configure BGP peers manually in `vtysh`. |
-| L-18 | **write memory Not Called After Interface Operations** | FRR — Persistence | After creating loopback interfaces and adding BGP/OSPF advertisements, VRFPilot does not call `write memory`. If FRR restarts, all routing advertisements are lost. | Routing advertisements disappear after an FRR restart or system reboot. | Manually run `sudo vtysh -c "write memory"` after creation operations. VRF deletion does call `write memory` automatically. |
-| L-19 | **FRR Config Parsing is Text-Based for OSPF** | FRR — OSPF | OSPF existence checks parse `show running-config` text output. Changes in FRR output formatting across versions could cause silent false-negatives. | OSPF removal may occasionally re-attempt an already-removed statement. | Not operationally harmful — the extra `no network` command is a no-op if the statement is absent. |
-| L-20 | **BGP Existence Check Uses `show bgp` Routing Table** | FRR — BGP | BGP network existence is verified via `show bgp [vrf X] ipv4 unicast` rather than running config. Prefixes not yet in the BGP RIB (e.g. due to policy suppression) will be missed. | A suppressed prefix may not be removed by cleanup. | Check FRR policy/route-map configuration if a prefix is not appearing in `show bgp`. |
-| L-21 | **Single ASN Assumption** | FRR — BGP | VRFPilot assumes all VRF BGP instances share the same ASN as the GRT BGP process (`router bgp <asn>`). Different ASNs per VRF are not supported. | Configurations with different ASNs per VRF will cause incorrect router context selection. | Not applicable in standard FRR deployments — FRR itself requires a consistent ASN across VRF instances. |
-| L-22 | **No FRR Version Compatibility Checking** | FRR — General | VRFPilot does not check the FRR version before issuing commands. Command syntax differences between FRR 8.x and 10.x could cause unexpected failures. | Commands may fail silently on incompatible FRR versions. | Tested on FRR 8.x, 9.x, and 10.x. Check `/var/tmp/loopgen.log` for vtysh output if commands appear to fail. |
-| L-23 | **No FRR Startup Config Modification** | FRR — Persistence | VRFPilot modifies FRR running config only. It does not edit `/etc/frr/frr.conf` directly. | After `systemctl restart frr`, all VRFPilot-applied FRR config is lost unless `write memory` was called. | Run `sudo vtysh -c "write memory"` after completing creation operations. |
-
-
-
-**VRF Management Limitations**
-
-| # | Limitation | Area | Description | Impact | Workaround |
-|---|------------|------|-------------|--------|------------|
-| L-24 | **VRF Routing Table IDs Must Be Unique System-Wide** | VRF — Creation | VRFPilot validates that the chosen routing table ID is not already in use by known VRFs. However, it does not scan `/etc/iproute2/rt_tables` for reserved or externally-used table IDs. | A table ID conflict with a non-VRF route table could cause routing anomalies. | Check `cat /etc/iproute2/rt_tables` and avoid IDs 0 (unspec), 253 (default), 254 (main), 255 (local), and any IDs used by external tools. |
-| L-25 | **Cannot Rename a VRF** | VRF — Management | VRF renaming is not supported. The VRF must be deleted and recreated with the new name. | Renaming a VRF requires deleting all interfaces in it first. | Delete the VRF and recreate it with the desired name, then recreate its interfaces. |
-| L-26 | **VRF Deletion Requires FRR PIM to be Responsive** | VRF — Deletion | Cleaning up `pimreg`/`pim6reg` devices during VRF deletion relies on FRR's PIM daemon responding to `clear ip pim vrf X interfaces`. If PIM is not running or unresponsive, orphaned pimreg interfaces may remain in GRT. | Cosmetic issue: orphaned interfaces appear in GRT but do not affect routing. | Restart FRR (`sudo systemctl restart frr`) to force PIM socket cleanup. |
-| L-27 | **Only LoopGen-Tracked Interfaces Get Full FRR Cleanup** | VRF — Deletion | When deleting a VRF, only interfaces tracked in the state file receive full FRR cleanup (routing advertisement removal). Untracked interfaces (e.g. `ens224` enslaved to the VRF externally) only get kernel-level detachment. | FRR interface stanzas for externally-created interfaces may not be removed. | Manually remove FRR stanzas: `sudo vtysh -c "configure terminal" -c "no interface ens224" -c "end"`. |
-| L-28 | **No VRF Import / Export Route Leaking** | VRF — Routing | VRFPilot does not configure inter-VRF route leaking, VRF import/export policies, or VPN route targets in FRR. | Cannot implement hub-and-spoke or shared services VRF topologies automatically. | Configure route leaking manually in `vtysh` using `ip route` commands or BGP VPNv4. |
-
----
-
-**State and Persistence Limitations**
-
-| # | Limitation | Area | Description | Impact | Workaround |
-|---|------------|------|-------------|--------|------------|
-| L-29 | **Fixed State File Location** | State — Storage | The state file is always written to `/var/tmp/loopgen_state.json`. This path is not configurable. | Cannot run multiple independent VRFPilot instances with separate state files. | Manually copy/rename the state file between sessions if isolation is needed. |
-| L-30 | **No Multi-Instance Concurrency** | State — Locking | The state file has no file locking. Running two simultaneous VRFPilot instances will cause state corruption. | Race conditions on concurrent writes will produce a corrupted or inconsistent state file. | Never run two instances simultaneously. Use `pgrep -f vrfpilot` to check for running instances. |
-| L-31 | **State File Is Not Encrypted** | State — Security | The state file contains IP addresses, VRF names, BGP ASNs, and interface metadata in plain-text JSON. | Sensitive network topology information is world-readable at `/var/tmp/loopgen_state.json`. | Restrict file permissions: `sudo chmod 600 /var/tmp/loopgen_state.json`. Consider moving it to `/root/` for root-only access. |
-| L-32 | **Stale State After Manual Interface Deletion** | State — Consistency | If a kernel interface or VRF is deleted outside VRFPilot (e.g. `ip link del loop001`), the state file retains the entry. VRFPilot will warn about the mismatch but will not auto-reconcile. | The state file becomes inconsistent with the kernel. `show interfaces` may list interfaces that no longer exist. | Manually remove stale entries from the state file, or use VRFPilot's cleanup menu to delete the entry (it will skip the already-absent kernel device). |
-| L-33 | **No State Backup or Versioning** | State — Management | The state file is overwritten on every save with no backup or rollback capability. | An interrupted write (power failure, kill -9) could corrupt the state file. | The atomic write-then-rename strategy minimises this risk. For extra safety: `cp /var/tmp/loopgen_state.json ~/loopgen_backup.json` before large operations. |
-| L-34 | **Log File Not Rotated** | Logging | `/var/tmp/loopgen.log` grows without bound. There is no built-in log rotation. | On systems with heavy VRFPilot usage the log file may consume significant disk space in `/var/tmp`. | Set up `logrotate`: `echo '/var/tmp/loopgen.log { daily rotate 7 compress missingok }' | sudo tee /etc/logrotate.d/vrfpilot`. |
-
----
-
-**Operational and Scalability Limitations**
-
-| # | Limitation | Area | Description | Impact | Workaround |
-|---|------------|------|-------------|--------|------------|
-| L-35 | **Interactive CLI Only — No Automation API** | Operations | VRFPilot is exclusively an interactive terminal application. It has no REST API, gRPC interface, NETCONF/YANG model, Python importable library, or CLI argument mode. | Cannot be called from Ansible, Terraform, CI/CD pipelines, or other automation tools. | For automated workflows, use `ip` commands + `vtysh` directly, or wait for a future automation-friendly version. |
-| L-36 | **Single-Node Scope** | Operations | VRFPilot manages only the local Linux system. It cannot push configuration to remote hosts or synchronise VRF topology across a fleet of nodes. | Not suitable for multi-node lab provisioning without wrapper scripts. | Use Ansible or similar tools to distribute VRFPilot execution across nodes via SSH. |
-| L-37 | **No Bulk Import from File** | Operations | Interfaces and VRFs must be created interactively through the menu. There is no facility to read a YAML/JSON/CSV configuration file and provision in bulk. | Large-scale provisioning (100+ interfaces) requires many interactive prompts. | Automate input using `expect` or pipe responses: `echo -e "2\n1\n5\ntest\nloop\n1\n1\ny" \| sudo python3 vrfpilot.py`. |
-| L-38 | **No Undo / Rollback History** | Operations | There is no transaction history or multi-step undo capability. The only rollback is per-interface at creation time (if FRR config fails). | Cannot undo a series of creation steps as a batch. | Use the cleanup menu immediately after an unwanted creation to remove specific interfaces. |
-| L-39 | **No Interface Health Monitoring** | Monitoring | VRFPilot displays interface state at query time but does not monitor interfaces continuously, alert on state changes, or track interface flaps. | No notification if a created loopback goes down unexpectedly. | Integrate with external monitoring tools (Prometheus node_exporter, Nagios, Zabbix) for continuous monitoring. |
-| L-40 | **Random IP May Exhaust After ~1000 Attempts** | IP Allocation | The random IP generator tries up to 1000 candidates before failing. On systems with thousands of existing RFC1918 addresses, it may fail to find a unique IP. | Creation fails with "No unique random IP after 1000 attempts". | Use subnet mode instead of random mode when a large number of interfaces already exist. |
-| L-41 | **No IPAM Integration** | IP Allocation | VRFPilot has no integration with external IPAM systems (NetBox, Infoblox, phpIPAM). IP allocation is local-only based on the state file and kernel address table. | Allocated IPs are not registered in the organisation's IPAM, risking IP conflicts with other systems. | Export the state file to IPAM after provisioning: `cat /var/tmp/loopgen_state.json \| python3 -c "import sys,json; [print(v['ip']) for v in json.load(sys.stdin)['interfaces'].values()]"`. |
-
-**Security Limitations**
-
-| # | Limitation | Area | Description | Impact | Workaround |
-|---|------------|------|-------------|--------|------------|
-| L-42 | **Requires Root Privileges** | Security | All operations require root (`sudo`) because RTNETLINK write operations require `CAP_NET_ADMIN`. There is no privilege separation or capability dropping after startup. | VRFPilot runs with full root access for its entire lifetime. | Review the source code before running. Consider running in a dedicated container or VM with limited blast radius. |
-| L-43 | **No Input Sanitisation Beyond Basic Validation** | Security | User inputs (VRF names, interface prefixes, tags) are sanitised with regex but are passed to `vtysh` as shell arguments. Extremely crafted inputs could theoretically produce unexpected vtysh commands. | Theoretical command injection risk via vtysh arguments. | VRFPilot is designed for trusted operators in controlled environments, not as a public-facing service. |
-| L-44 | **vtysh Commands Not Authenticated** | Security | VRFPilot assumes the operator running it has unrestricted `vtysh` access. FRR RBAC or AAA authentication for vtysh is not handled. | If FRR vtysh has access controls configured, VRFPilot operations may fail silently. | Ensure the user running VRFPilot has unrestricted vtysh access (typically requires root or membership in the `frrvty` group). |
-| L-45 | **No Audit Trail Beyond Log File** | Security | Operations are logged to `/var/tmp/loopgen.log` but this is a local flat file with no integrity protection, no remote syslog forwarding, and no tamper detection. | Log file can be modified or deleted by any root-level process. | Forward logs to a remote syslog server: configure `rsyslog` or `journald` forwarding. |
-
-**Platform Limitations**
-
-| # | Limitation | Area | Description | Impact | Workaround |
-|---|------------|------|-------------|--------|------------|
-| L-46 | **Linux Only** | Platform | VRFPilot uses `pyroute2` (Linux RTNETLINK) and `vtysh` (FRR). It does not run on macOS, FreeBSD, Windows, or any non-Linux platform. | Cannot be used on non-Linux systems. | Use a Linux VM or container (Docker with `--privileged` and host networking). |
-| L-47 | **Ubuntu / Debian Focused** | Platform | Tested on Ubuntu 20.04, 22.04, and 24.04. Other distributions (RHEL, Fedora, Alpine) may work but are untested. Package names and paths may differ. | Unexpected behaviour on non-Debian distributions. | Adapt the installation steps for your distribution's package manager. The Python code itself is distribution-agnostic. |
-| L-48 | **Python 3.8 Minimum** | Platform | Uses `importlib.metadata` (stdlib since 3.8) and several 3.8+ type hint features. Python 3.6 and 3.7 are not supported. | Will not run on systems with Python < 3.8. | Upgrade Python: `sudo apt install python3.10` or use `pyenv`. |
-| L-49 | **No Container-Native VRF Support** | Platform | Linux VRF devices require `CAP_NET_ADMIN` and access to the host network namespace. In Docker containers, VRFs are only available with `--privileged` or `--cap-add NET_ADMIN` and host networking (`--network host`). | Cannot be used in standard unprivileged containers. | Run with: `docker run --privileged --network host -it ubuntu:22.04 python3 vrfpilot.py`. |
-| L-50 | **Kernel Version Dependency for VRF** | Platform | Linux VRF support (`CONFIG_NET_VRF`) was introduced in kernel 4.3. Full feature stability (including correct RTNETLINK enslavement ordering) requires kernel 5.4+. | On kernels < 5.4, interface VRF placement may not work correctly. | Upgrade to Ubuntu 20.04+ which ships with kernel 5.4 or later. |
-
----
-
-**Summary Table**
-
-| Category | Count | Critical | Minor |
-|---|---|---|---|
-| Protocol and Address Family | 7 (L-01 to L-07) | L-01, L-07 | L-02 to L-06 |
-| Interface and Kernel | 7 (L-08 to L-14) | L-11, L-12 | L-08 to L-10, L-13, L-14 |
-| FRR Integration | 9 (L-15 to L-23) | L-15, L-16, L-18 | L-17, L-19 to L-23 |
-| VRF Management | 5 (L-24 to L-28) | L-26, L-27 | L-24, L-25, L-28 |
-| State and Persistence | 6 (L-29 to L-34) | L-30, L-31 | L-29, L-32 to L-34 |
-| Operational and Scalability | 7 (L-35 to L-41) | L-35 | L-36 to L-41 |
-| Security | 4 (L-42 to L-45) | L-42, L-43 | L-44, L-45 |
-| Platform | 5 (L-46 to L-50) | L-46, L-48 | L-47, L-49, L-50 |
-| **Total** | **50** | **16** | **34** |
-
----
-
-> **Legend:**
-> - **Critical** — may prevent a primary use case from working in common scenarios
-> - **Minor** — edge case, cosmetic, or has a straightforward workaround
 ---
 
 ## Troubleshooting
 
-### Application will not start
+### LoopGen will not start
 
 ```bash
 # Check Python version
-python3 --version    # Must be 3.8+
+python3 --version            # Must be 3.8+
 
 # Check root privileges
 sudo python3 loopgen.py
 
-# Check dependencies
-python3 -c "import pyroute2, prettytable, colorama; print('OK')"
+# Check all dependencies are installed
+python3 -c "import pyroute2, prettytable, colorama; print('All OK')"
 ```
 
-### FRR shows as N/A in banner
+### FRR shows as N/A in the LoopGen banner
 
 ```bash
 # Check FRR is running
@@ -1040,29 +911,18 @@ sudo vtysh -c "show version"
 sudo systemctl restart frr
 ```
 
-### Interfaces appear in wrong VRF
+### Interfaces appear in the wrong VRF
 
-Check the log for VRF membership verification:
+Check the LoopGen log for VRF membership verification:
 
 ```bash
 sudo grep "verify_vrf_membership" /var/tmp/loopgen.log
 ```
 
-If interfaces persistently land in GRT, ensure the kernel supports VRF enslavement:
-
-```bash
-# Must return 0 (success)
-sudo ip link add vrf-test type vrf table 99 && \
-sudo ip link add dummy-test type dummy && \
-sudo ip link set dummy-test master vrf-test && \
-sudo ip link show master vrf-test && \
-sudo ip link del dummy-test && \
-sudo ip link del vrf-test
-```
-
 ### Deleted interfaces still visible in `show interface brief`
 
-This means FRR's interface cache was not cleared. Run manually:
+LoopGen issues `no interface <name>` after every kernel delete to
+clear FRR's interface cache. If this fails, run manually:
 
 ```bash
 sudo vtysh << 'EOF'
@@ -1074,13 +934,10 @@ write memory
 EOF
 ```
 
-### State file has stale entries
+### State file has stale entries after manual deletion
 
 ```bash
-# View current state
-sudo cat /var/tmp/loopgen_state.json | python3 -m json.tool
-
-# Remove a specific stale entry
+# Remove a specific stale entry from the LoopGen state file
 sudo python3 - << 'EOF'
 import json
 from pathlib import Path
@@ -1088,17 +945,17 @@ p = Path("/var/tmp/loopgen_state.json")
 d = json.loads(p.read_text())
 d["interfaces"].pop("loop001", None)
 p.write_text(json.dumps(d, indent=2))
-print("Done")
+print("Done — stale entry removed")
 EOF
 ```
 
 ### BGP network not removed after cleanup
 
 ```bash
-# Check what BGP sees
+# Check what BGP currently sees
 sudo vtysh -c "show bgp vrf vrf100 ipv4 unicast"
 
-# Check the log for removal steps
+# Check LoopGen log for removal steps
 sudo grep "remove_bgp_network" /var/tmp/loopgen.log
 
 # Manual removal if needed
