@@ -212,7 +212,7 @@ sudo pip3 install pyroute2 prettytable colorama
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
-# Run as: sudo venv/bin/python LoopGen.py
+# Run as: sudo venv/bin/python loopgen.py
 ```
 
 ### Step 3 — Install and Configure FRR
